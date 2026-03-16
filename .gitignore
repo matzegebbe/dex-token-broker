@@ -1,5 +1,5 @@
 .DS_Store
 bin/
 coverage.out
-dextokenbroker
+/dextokenbroker
 dist/
