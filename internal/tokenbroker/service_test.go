@@ -32,6 +32,7 @@ func TestCheckHandlerCachesTokenPerCredentialSet(t *testing.T) {
 		CacheCleanupInterval: time.Minute,
 		ExpirySafetyMargin:   30 * time.Second,
 		AllowInsecureDexURL:  true,
+		CacheMaxEntries:      1024,
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("expected broker to initialize: %v", err)
@@ -101,7 +102,7 @@ func TestCheckHandlerRejectsMissingCredentials(t *testing.T) {
 func TestCacheCleanupExpiredRemovesEntries(t *testing.T) {
 	t.Parallel()
 
-	cache := newTokenCache()
+	cache := newTokenCache(16)
 	cache.Set("expired", "token-a", time.Now().Add(-time.Second))
 	cache.Set("valid", "token-b", time.Now().Add(time.Minute))
 
@@ -119,7 +120,7 @@ func TestCacheCleanupExpiredRemovesEntries(t *testing.T) {
 func TestStartJanitorStopsWithContext(t *testing.T) {
 	t.Parallel()
 
-	cache := newTokenCache()
+	cache := newTokenCache(16)
 	cache.Set("expired", "token-a", time.Now().Add(-time.Second))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -240,6 +241,140 @@ func TestCheckHandlerRejectsInvalidTokenType(t *testing.T) {
 
 	if recorder.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", recorder.Code)
+	}
+}
+
+func TestCheckHandlerUsesStaticCredentials(t *testing.T) {
+	t.Parallel()
+
+	var authHeader string
+	service, err := New(Config{
+		DexTokenURL:         "http://dex.example/token",
+		AllowInsecureDexURL: true,
+		StaticClientID:      "static-client",
+		StaticClientSecret:  "static-secret",
+		StaticScope:         "broker.scope",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("expected broker to initialize: %v", err)
+	}
+
+	service.httpClient = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			authHeader = r.Header.Get("Authorization")
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			recorder.WriteHeader(http.StatusOK)
+			_, _ = recorder.WriteString(`{"access_token":"token-123","token_type":"Bearer","expires_in":3600}`)
+			return recorder.Result(), nil
+		}),
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/check", nil)
+	req.Header.Set("x-client-id", "request-client")
+	req.Header.Set("x-client-secret", "request-secret")
+	req.Header.Set("x-scope", "request.scope")
+
+	service.CheckHandler(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+
+	if authHeader == "" {
+		t.Fatal("expected upstream auth header to be set")
+	}
+
+	if got := recorder.Header().Get("Authorization"); got != "Bearer token-123" {
+		t.Fatalf("expected Authorization header, got %q", got)
+	}
+}
+
+func TestCheckHandlerUsesConfiguredHeaderNames(t *testing.T) {
+	t.Parallel()
+
+	service, err := New(Config{
+		DexTokenURL:         "http://dex.example/token",
+		AllowInsecureDexURL: true,
+		ClientIDHeader:      "X-Broker-Client-ID",
+		ClientSecretHeader:  "X-Broker-Client-Secret",
+		ScopeHeader:         "X-Broker-Scope",
+		UpstreamAuthHeader:  "X-Backend-Authorization",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("expected broker to initialize: %v", err)
+	}
+
+	service.httpClient = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			recorder.WriteHeader(http.StatusOK)
+			_, _ = recorder.WriteString(`{"access_token":"token-abc","token_type":"Bearer","expires_in":3600}`)
+			return recorder.Result(), nil
+		}),
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/check", nil)
+	req.Header.Set("X-Broker-Client-ID", "service-a")
+	req.Header.Set("X-Broker-Client-Secret", "secret-one")
+	req.Header.Set("X-Broker-Scope", "api.read")
+
+	service.CheckHandler(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+
+	if got := recorder.Header().Get("X-Backend-Authorization"); got != "Bearer token-abc" {
+		t.Fatalf("expected configured upstream header, got %q", got)
+	}
+}
+
+func TestNewRejectsPartialStaticCredentials(t *testing.T) {
+	t.Parallel()
+
+	_, err := New(Config{
+		DexTokenURL:    "https://dex.example/token",
+		StaticClientID: "static-client",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil {
+		t.Fatal("expected partial static credentials to be rejected")
+	}
+}
+
+func TestNewRejectsInvalidHeaderName(t *testing.T) {
+	t.Parallel()
+
+	_, err := New(Config{
+		DexTokenURL:        "https://dex.example/token",
+		UpstreamAuthHeader: "Bad Header",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil {
+		t.Fatal("expected invalid header name to be rejected")
+	}
+}
+
+func TestCacheEvictsSoonestExpiringEntryAtCapacity(t *testing.T) {
+	t.Parallel()
+
+	cache := newTokenCache(2)
+	cache.Set("a", "token-a", time.Now().Add(1*time.Minute))
+	cache.Set("b", "token-b", time.Now().Add(2*time.Minute))
+	cache.Set("c", "token-c", time.Now().Add(3*time.Minute))
+
+	if _, ok := cache.Get("a"); ok {
+		t.Fatal("expected soonest expiring entry to be evicted")
+	}
+
+	if _, ok := cache.Get("b"); !ok {
+		t.Fatal("expected entry b to remain in cache")
+	}
+
+	if _, ok := cache.Get("c"); !ok {
+		t.Fatal("expected entry c to remain in cache")
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"sync"
@@ -22,6 +23,14 @@ type Config struct {
 	CacheCleanupInterval time.Duration
 	ExpirySafetyMargin   time.Duration
 	AllowInsecureDexURL  bool
+	UpstreamAuthHeader   string
+	ClientIDHeader       string
+	ClientSecretHeader   string
+	ScopeHeader          string
+	CacheMaxEntries      int
+	StaticClientID       string
+	StaticClientSecret   string
+	StaticScope          string
 }
 
 type Service struct {
@@ -30,6 +39,13 @@ type Service struct {
 	logger               *slog.Logger
 	httpClient           *http.Client
 	dexTokenURL          string
+	upstreamAuthHeader   string
+	clientIDHeader       string
+	clientSecretHeader   string
+	scopeHeader          string
+	staticClientID       string
+	staticClientSecret   string
+	staticScope          string
 	cacheCleanupInterval time.Duration
 	expirySafetyMargin   time.Duration
 }
@@ -84,12 +100,53 @@ func New(cfg Config, logger *slog.Logger) (*Service, error) {
 	transport.MaxIdleConnsPerHost = 8
 	transport.MaxConnsPerHost = 32
 
+	upstreamAuthHeader, err := normalizeHeaderName(cfg.UpstreamAuthHeader, "Authorization")
+	if err != nil {
+		return nil, fmt.Errorf("invalid upstream auth header: %w", err)
+	}
+
+	clientIDHeader, err := normalizeHeaderName(cfg.ClientIDHeader, "x-client-id")
+	if err != nil {
+		return nil, fmt.Errorf("invalid client id header: %w", err)
+	}
+
+	clientSecretHeader, err := normalizeHeaderName(cfg.ClientSecretHeader, "x-client-secret")
+	if err != nil {
+		return nil, fmt.Errorf("invalid client secret header: %w", err)
+	}
+
+	scopeHeader, err := normalizeHeaderName(cfg.ScopeHeader, "x-scope")
+	if err != nil {
+		return nil, fmt.Errorf("invalid scope header: %w", err)
+	}
+
+	if cfg.CacheMaxEntries < 0 {
+		return nil, errors.New("cache max entries must be greater than or equal to zero")
+	}
+
+	staticEnabled := cfg.StaticClientID != "" || cfg.StaticClientSecret != "" || cfg.StaticScope != ""
+	if staticEnabled {
+		if cfg.StaticClientID == "" || cfg.StaticClientSecret == "" {
+			return nil, errors.New("STATIC_CLIENT_ID and STATIC_CLIENT_SECRET must both be set when static credentials are enabled")
+		}
+		if err := validateInboundHeaders(cfg.StaticClientID, cfg.StaticClientSecret, cfg.StaticScope, clientIDHeader, clientSecretHeader, scopeHeader); err != nil {
+			return nil, fmt.Errorf("invalid static credentials: %w", err)
+		}
+	}
+
 	return &Service{
-		cache:                newTokenCache(),
+		cache:                newTokenCache(cfg.CacheMaxEntries),
 		flights:              newFlightGroup(),
 		logger:               logger,
 		httpClient:           &http.Client{Timeout: timeout, Transport: transport},
 		dexTokenURL:          dexTokenURL,
+		upstreamAuthHeader:   upstreamAuthHeader,
+		clientIDHeader:       clientIDHeader,
+		clientSecretHeader:   clientSecretHeader,
+		scopeHeader:          scopeHeader,
+		staticClientID:       cfg.StaticClientID,
+		staticClientSecret:   cfg.StaticClientSecret,
+		staticScope:          cfg.StaticScope,
 		cacheCleanupInterval: cleanupInterval,
 		expirySafetyMargin:   expiryMargin,
 	}, nil
@@ -115,11 +172,9 @@ func (s *Service) CheckHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientID := strings.TrimSpace(r.Header.Get("x-client-id"))
-	clientSecret := r.Header.Get("x-client-secret")
-	scope := strings.TrimSpace(r.Header.Get("x-scope"))
+	clientID, clientSecret, scope := s.credentialsForRequest(r)
 
-	if err := validateInboundHeaders(clientID, clientSecret, scope); err != nil {
+	if err := validateInboundHeaders(clientID, clientSecret, scope, s.clientIDHeader, s.clientSecretHeader, s.scopeHeader); err != nil {
 		var requestErr *tokenRequestError
 		if errors.As(err, &requestErr) {
 			http.Error(w, requestErr.Message, requestErr.StatusCode)
@@ -174,8 +229,16 @@ func (s *Service) CheckHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) writeAuthorized(w http.ResponseWriter, accessToken string) {
 	setCommonResponseHeaders(w)
-	w.Header().Set("Authorization", "Bearer "+accessToken)
+	w.Header().Set(s.upstreamAuthHeader, "Bearer "+accessToken)
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Service) credentialsForRequest(r *http.Request) (clientID, clientSecret, scope string) {
+	if s.staticClientID != "" || s.staticClientSecret != "" {
+		return s.staticClientID, s.staticClientSecret, s.staticScope
+	}
+
+	return strings.TrimSpace(r.Header.Get(s.clientIDHeader)), r.Header.Get(s.clientSecretHeader), strings.TrimSpace(r.Header.Get(s.scopeHeader))
 }
 
 func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scope string) (oauthTokenResponse, error) {
@@ -297,7 +360,7 @@ func validateDexTokenURL(rawURL string, allowInsecure bool) (string, error) {
 	return parsed.String(), nil
 }
 
-func validateInboundHeaders(clientID, clientSecret, scope string) error {
+func validateInboundHeaders(clientID, clientSecret, scope, clientIDHeader, clientSecretHeader, scopeHeader string) error {
 	if clientID == "" || clientSecret == "" {
 		return &tokenRequestError{
 			StatusCode: http.StatusUnauthorized,
@@ -308,21 +371,21 @@ func validateInboundHeaders(clientID, clientSecret, scope string) error {
 	if len(clientID) > maxClientIDLength {
 		return &tokenRequestError{
 			StatusCode: http.StatusBadRequest,
-			Message:    "x-client-id too long",
+			Message:    clientIDHeader + " too long",
 		}
 	}
 
 	if len(clientSecret) > maxClientSecretLength {
 		return &tokenRequestError{
 			StatusCode: http.StatusBadRequest,
-			Message:    "x-client-secret too long",
+			Message:    clientSecretHeader + " too long",
 		}
 	}
 
 	if len(scope) > maxScopeLength {
 		return &tokenRequestError{
 			StatusCode: http.StatusBadRequest,
-			Message:    "x-scope too long",
+			Message:    scopeHeader + " too long",
 		}
 	}
 
@@ -334,6 +397,18 @@ func validateInboundHeaders(clientID, clientSecret, scope string) error {
 	}
 
 	return nil
+}
+
+func normalizeHeaderName(value, fallback string) (string, error) {
+	if value == "" {
+		value = fallback
+	}
+
+	if !isValidHeaderName(value) {
+		return "", fmt.Errorf("invalid header name %q", value)
+	}
+
+	return textproto.CanonicalMIMEHeaderKey(value), nil
 }
 
 func validateTokenResponse(token oauthTokenResponse) error {
@@ -397,6 +472,28 @@ func hasInvalidHeaderValue(value string) bool {
 	return false
 }
 
+func isValidHeaderName(value string) bool {
+	if value == "" {
+		return false
+	}
+
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
+			continue
+		}
+
+		switch b {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+			continue
+		default:
+			return false
+		}
+	}
+
+	return true
+}
+
 func setCommonResponseHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
@@ -420,13 +517,15 @@ func (e *tokenRequestError) Error() string {
 }
 
 type tokenCache struct {
-	mu    sync.RWMutex
-	items map[string]cachedToken
+	mu         sync.RWMutex
+	items      map[string]cachedToken
+	maxEntries int
 }
 
-func newTokenCache() *tokenCache {
+func newTokenCache(maxEntries int) *tokenCache {
 	return &tokenCache{
-		items: make(map[string]cachedToken),
+		items:      make(map[string]cachedToken),
+		maxEntries: maxEntries,
 	}
 }
 
@@ -456,6 +555,17 @@ func (c *tokenCache) Get(key string) (cachedToken, bool) {
 
 func (c *tokenCache) Set(key, token string, expiresAt time.Time) {
 	c.mu.Lock()
+	if c.maxEntries == 0 {
+		c.mu.Unlock()
+		return
+	}
+
+	if _, exists := c.items[key]; !exists && len(c.items) >= c.maxEntries {
+		c.cleanupExpiredLocked(time.Now())
+		if len(c.items) >= c.maxEntries {
+			c.evictSoonestExpiringLocked()
+		}
+	}
 	c.items[key] = cachedToken{
 		Token:     token,
 		ExpiresAt: expiresAt,
@@ -467,16 +577,42 @@ func (c *tokenCache) CleanupExpired() (removed int, remaining int) {
 	now := time.Now()
 
 	c.mu.Lock()
+	removed = c.cleanupExpiredLocked(now)
+	remaining = len(c.items)
+	c.mu.Unlock()
+
+	return removed, remaining
+}
+
+func (c *tokenCache) cleanupExpiredLocked(now time.Time) (removed int) {
 	for key, entry := range c.items {
 		if now.After(entry.ExpiresAt) {
 			delete(c.items, key)
 			removed++
 		}
 	}
-	remaining = len(c.items)
-	c.mu.Unlock()
 
-	return removed, remaining
+	return removed
+}
+
+func (c *tokenCache) evictSoonestExpiringLocked() {
+	var (
+		evictKey string
+		evictSet bool
+		evictAt  time.Time
+	)
+
+	for key, entry := range c.items {
+		if !evictSet || entry.ExpiresAt.Before(evictAt) {
+			evictKey = key
+			evictAt = entry.ExpiresAt
+			evictSet = true
+		}
+	}
+
+	if evictSet {
+		delete(c.items, evictKey)
+	}
 }
 
 func (c *tokenCache) StartJanitor(ctx context.Context, interval time.Duration, logger *slog.Logger) {

@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dex-token-broker
+type: Opaque
+stringData:
+  STATIC_CLIENT_ID: ""
+  STATIC_CLIENT_SECRET: ""
+  STATIC_SCOPE: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dex-token-broker
+  labels:
+    app: dex-token-broker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dex-token-broker
+  template:
+    metadata:
+      labels:
+        app: dex-token-broker
+    spec:
+      containers:
+        - name: dex-token-broker
+          image: ghcr.io/matzegebbe/dextokenbroker:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: LISTEN_ADDR
+              value: ":8080"
+            - name: DEX_TOKEN_URL
+              value: "https://dex.dex.svc.cluster.local/token"
+            - name: HTTP_TIMEOUT
+              value: "5s"
+            - name: CACHE_CLEANUP_INTERVAL
+              value: "5m"
+            - name: EXPIRY_SAFETY_MARGIN
+              value: "30s"
+            - name: CACHE_MAX_ENTRIES
+              value: "1024"
+            - name: SHUTDOWN_TIMEOUT
+              value: "10s"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: ALLOW_INSECURE_DEX_URL
+              value: "false"
+            - name: UPSTREAM_AUTH_HEADER
+              value: "Authorization"
+            - name: CLIENT_ID_HEADER
+              value: "x-client-id"
+            - name: CLIENT_SECRET_HEADER
+              value: "x-client-secret"
+            - name: SCOPE_HEADER
+              value: "x-scope"
+            - name: STATIC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: dex-token-broker
+                  key: STATIC_CLIENT_ID
+                  optional: true
+            - name: STATIC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dex-token-broker
+                  key: STATIC_CLIENT_SECRET
+                  optional: true
+            - name: STATIC_SCOPE
+              valueFrom:
+                secretKeyRef:
+                  name: dex-token-broker
+                  key: STATIC_SCOPE
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+      terminationGracePeriodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dex-token-broker
+  labels:
+    app: dex-token-broker
+spec:
+  selector:
+    app: dex-token-broker
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

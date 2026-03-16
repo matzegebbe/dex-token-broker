@@ -18,10 +18,13 @@ DexTokenBroker fills that gap.
 - Designed for Envoy Gateway `ext_authz`
 - OAuth2 `client_credentials` support against Dex
 - In-memory token cache with periodic cleanup
+- Bounded cache size with a simple eviction policy
 - Cache key includes a hash of the client secret, so rotated or incorrect secrets do not reuse another token
 - In-flight request deduplication to avoid token refresh storms
 - TLS-to-Dex by default, with an explicit insecure opt-out for local or trusted-network testing
 - Strict request validation and bounded upstream response parsing
+- Configurable inbound and outbound header names
+- Optional static credentials mode for secret injection from the runtime environment
 - Stateless per pod
 - Ready for Docker and Kubernetes
 - GitHub Actions CI
@@ -79,17 +82,29 @@ DexTokenBroker is configured with environment variables:
 | `HTTP_TIMEOUT` | `5s` | Timeout for outbound token requests |
 | `CACHE_CLEANUP_INTERVAL` | `5m` | How often expired tokens are removed |
 | `EXPIRY_SAFETY_MARGIN` | `30s` | Buffer subtracted from `expires_in` before a token is treated as expired |
+| `CACHE_MAX_ENTRIES` | `1024` | Maximum number of cached token entries; `0` disables caching |
 | `ALLOW_INSECURE_DEX_URL` | `false` | Allow plain `http://` Dex token endpoints for local development or trusted internal networks |
+| `LOG_LEVEL` | `INFO` | Log level for the service logger |
+| `SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown timeout |
+| `UPSTREAM_AUTH_HEADER` | `Authorization` | Header returned to Envoy for the backend request |
+| `CLIENT_ID_HEADER` | `x-client-id` | Header name used to read the OAuth client ID |
+| `CLIENT_SECRET_HEADER` | `x-client-secret` | Header name used to read the OAuth client secret |
+| `SCOPE_HEADER` | `x-scope` | Header name used to read the OAuth scope |
+| `STATIC_CLIENT_ID` | empty | Fixed OAuth client ID; when set together with `STATIC_CLIENT_SECRET`, incoming credential headers are ignored |
+| `STATIC_CLIENT_SECRET` | empty | Fixed OAuth client secret for static credential mode |
+| `STATIC_SCOPE` | empty | Fixed OAuth scope for static credential mode |
 
 ## API
 
 ### `POST /check`
 
-Expected request headers:
+Expected request headers by default:
 
 - `x-client-id`
 - `x-client-secret`
 - `x-scope` (optional)
+
+Those names can be changed with `CLIENT_ID_HEADER`, `CLIENT_SECRET_HEADER`, and `SCOPE_HEADER`.
 
 Success response:
 
@@ -160,7 +175,7 @@ docker run \
 Published images are intended for GitHub Container Registry:
 
 ```text
-ghcr.io/<github-owner>/dextokenbroker
+ghcr.io/matzegebbe/dextokenbroker
 ```
 
 Release tags publish at least these image tags:
@@ -169,6 +184,11 @@ Release tags publish at least these image tags:
 - `1.2.3`
 - `1.2`
 - `latest`
+
+Example configuration files:
+
+- [.env.example](/Users/mgebbe/workspace/DexTokenBroker/.env.example)
+- [examples/k8s-deployment.yml](/Users/mgebbe/workspace/DexTokenBroker/examples/k8s-deployment.yml)
 
 ## Envoy Gateway integration
 
@@ -181,6 +201,8 @@ Conceptually the setup looks like this:
 3. Envoy forwards `x-client-id`, `x-client-secret`, and optionally `x-scope` to DexTokenBroker.
 4. DexTokenBroker returns `Authorization: Bearer <token>`.
 5. Envoy forwards that `Authorization` header to the backend service.
+
+If you change `UPSTREAM_AUTH_HEADER`, Envoy must forward that header name instead.
 
 Example `SecurityPolicy` shape:
 
@@ -231,7 +253,7 @@ spec:
     spec:
       containers:
         - name: dex-token-broker
-          image: ghcr.io/<github-owner>/dextokenbroker:latest
+          image: ghcr.io/matzegebbe/dextokenbroker:latest
           ports:
             - containerPort: 8080
           env:
@@ -268,6 +290,8 @@ The cache key is derived from:
 
 That keeps the service stateless while preventing a token minted for one secret from being reused by a different secret for the same client ID.
 
+The cache is bounded by `CACHE_MAX_ENTRIES`. When the cache reaches capacity, DexTokenBroker first removes expired entries and then evicts the entry that expires soonest.
+
 Expired tokens are removed in two ways:
 
 - lazily on read when an expired entry is accessed
@@ -283,6 +307,7 @@ The broker also deduplicates concurrent cache misses per cache key, which helps 
 - `x-client-id`, `x-client-secret`, and `x-scope` are length-limited and rejected if they contain control characters.
 - Dex token responses are size-limited and the broker rejects non-Bearer token types.
 - If all traffic should use one fixed machine client, prefer storing the credentials in Kubernetes Secrets and letting DexTokenBroker own them instead of forwarding credentials from external clients.
+- `STATIC_CLIENT_ID` and `STATIC_CLIENT_SECRET` are intended for that fixed machine-client mode.
 - The in-memory cache is pod-local by design. That keeps the service simple, but each replica has its own cache.
 - The published container image is non-root, distroless, emits SBOM/provenance on release, and is scanned in CI.
 
