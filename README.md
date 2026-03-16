@@ -352,6 +352,8 @@ Releases follow SemVer:
 
 `.github/workflows/release-please.yml` and the two `.release-please-*` files manage releases.
 
+If you want the release tag and GitHub release created by Release Please to trigger downstream workflows such as the container publish job, create a repository secret named `RELEASE_PLEASE_PAT`. The workflow uses that secret when present and falls back to `GITHUB_TOKEN` otherwise.
+
 Flow:
 
 1. Merge conventional commits into `main`.
