@@ -7,7 +7,7 @@ ARG TARGETARCH=amd64
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
-ARG SOURCE_URL=https://github.com/mgebbe/DexTokenBroker
+ARG SOURCE_URL=https://github.com/matzegebbe/DexTokenBroker
 
 WORKDIR /src
 
@@ -23,6 +23,11 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 	-o /out/dextokenbroker ./cmd/dextokenbroker
 
 FROM gcr.io/distroless/static-debian12:nonroot
+
+ARG SOURCE_URL
+ARG VERSION
+ARG COMMIT
+ARG BUILD_DATE
 
 LABEL org.opencontainers.image.title="DexTokenBroker" \
 	org.opencontainers.image.description="OAuth2 token broker for Envoy Gateway and Dex" \

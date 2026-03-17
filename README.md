@@ -189,8 +189,8 @@ Release tags publish at least these image tags:
 
 Example configuration files:
 
-- [.env.example](/Users/mgebbe/workspace/DexTokenBroker/.env.example)
-- [examples/k8s-deployment.yml](/Users/mgebbe/workspace/DexTokenBroker/examples/k8s-deployment.yml)
+- [.env.example](.env.example)
+- [examples/k8s-deployment.yml](examples/k8s-deployment.yml)
 
 ## Envoy Gateway integration
 

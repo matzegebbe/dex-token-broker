@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mgebbe/DexTokenBroker/internal/tokenbroker"
+	"github.com/matzegebbe/DexTokenBroker/internal/tokenbroker"
 )
 
 var (
