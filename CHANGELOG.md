@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/matzegebbe/dex-token-broker/compare/v0.2.1...v0.2.2) (2026-03-17)
+
+
+### Bug Fixes
+
+* correct GitHub username, Dockerfile label scoping, and README paths ([#10](https://github.com/matzegebbe/dex-token-broker/issues/10)) ([3cc6e90](https://github.com/matzegebbe/dex-token-broker/commit/3cc6e90a7c2c2bfcabcb3dbff80c4faf61b22a0e))
+
 ## [0.2.1](https://github.com/matzegebbe/DexTokenBroker/compare/v0.2.0...v0.2.1) (2026-03-16)
 
 
