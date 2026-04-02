@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/matzegebbe/dex-token-broker/compare/v0.2.2...v0.3.0) (2026-04-02)
+
+
+### Features
+
+* add JWKS validation gate and token header mapping ([#16](https://github.com/matzegebbe/dex-token-broker/issues/16)) ([9cf5874](https://github.com/matzegebbe/dex-token-broker/commit/9cf587427a3cd28b89af8cfc2148aa531cf432cb))
+
 ## [0.2.2](https://github.com/matzegebbe/dex-token-broker/compare/v0.2.1...v0.2.2) (2026-03-17)
 
 
