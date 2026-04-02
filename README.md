@@ -19,6 +19,8 @@ DexTokenBroker fills that gap.
 - Small Go service with no third-party runtime dependencies
 - Designed for Envoy Gateway `ext_authz`
 - OAuth2 `client_credentials` support against Dex
+- Optional JWT/JWKS validation gate to restrict access to trusted callers
+- Configurable mapping of token response fields to upstream headers
 - In-memory token cache with periodic cleanup
 - Bounded cache size with a simple eviction policy
 - Cache key includes a hash of the client secret, so rotated or incorrect secrets do not reuse another token
@@ -36,6 +38,8 @@ DexTokenBroker fills that gap.
 - Security workflow with `govulncheck` and Trivy
 
 ## Request flow
+
+### Standard mode (credential headers)
 
 ```mermaid
 sequenceDiagram
@@ -55,6 +59,41 @@ sequenceDiagram
     end
     B-->>E: 200 OK + Authorization header
     E->>S: Forward request with Authorization: Bearer <token>
+    S-->>C: Response
+```
+
+### JWKS validation mode (trusted auth gateway)
+
+When `JWKS_URL` is set, DexTokenBroker validates incoming JWTs before exchanging static credentials with Dex:
+
+```mermaid
+sequenceDiagram
+    participant C as Client (with JWT)
+    participant E as Envoy Gateway
+    participant B as DexTokenBroker
+    participant J as JWKS Endpoint
+    participant D as Dex
+    participant S as Backend Service
+
+    C->>E: Request with Authorization: Bearer <jwt>
+    E->>B: ext_authz /check (forwards Authorization header)
+    B->>B: Validate JWT signature against cached JWKS
+    alt JWKS not cached or kid unknown
+        B->>J: GET JWKS
+        J-->>B: Public keys
+    end
+    alt JWT invalid
+        B-->>E: 401 Unauthorized
+    end
+    B->>B: JWT valid, use static credentials
+    B->>B: Check token cache
+    alt cache miss
+        B->>D: POST /token (client_credentials + scope)
+        D-->>B: access_token
+        B->>B: Cache token
+    end
+    B-->>E: 200 OK + Authorization + extra headers
+    E->>S: Forward with Authorization: Bearer <dex_token>
     S-->>C: Response
 ```
 
@@ -85,16 +124,21 @@ DexTokenBroker is configured with environment variables:
 | `CACHE_CLEANUP_INTERVAL` | `5m` | How often expired tokens are removed |
 | `EXPIRY_SAFETY_MARGIN` | `30s` | Buffer subtracted from `expires_in` before a token is treated as expired |
 | `CACHE_MAX_ENTRIES` | `1024` | Maximum number of cached token entries; `0` disables caching |
-| `ALLOW_INSECURE_DEX_URL` | `false` | Allow plain `http://` Dex token endpoints for local development or trusted internal networks |
+| `ALLOW_INSECURE_DEX_URL` | `false` | Allow plain `http://` URLs for Dex and JWKS endpoints |
 | `LOG_LEVEL` | `INFO` | Log level for the service logger |
 | `SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown timeout |
 | `UPSTREAM_AUTH_HEADER` | `Authorization` | Header returned to Envoy for the backend request |
+| `UPSTREAM_TOKEN_HEADERS` | empty | Map token response JSON fields to extra response headers (see [Token header mapping](#token-header-mapping)) |
 | `CLIENT_ID_HEADER` | `x-client-id` | Header name used to read the OAuth client ID |
 | `CLIENT_SECRET_HEADER` | `x-client-secret` | Header name used to read the OAuth client secret |
 | `SCOPE_HEADER` | `x-scope` | Header name used to read the OAuth scope |
 | `STATIC_CLIENT_ID` | empty | Fixed OAuth client ID; when set together with `STATIC_CLIENT_SECRET`, incoming credential headers are ignored |
 | `STATIC_CLIENT_SECRET` | empty | Fixed OAuth client secret for static credential mode |
-| `STATIC_SCOPE` | empty | Fixed OAuth scope for static credential mode |
+| `STATIC_SCOPE` | empty | Fixed OAuth scope for static credential mode (e.g. `openid email profile groups`) |
+| `JWKS_URL` | empty | JWKS endpoint URL; when set, incoming requests must carry a valid JWT (see [JWT/JWKS validation](#jwtjwks-validation-gate)) |
+| `JWT_HEADER` | `Authorization` | Header to read the incoming JWT from |
+| `JWT_ISSUER` | empty | If set, reject JWTs whose `iss` claim does not match |
+| `JWT_AUDIENCE` | empty | If set, reject JWTs whose `aud` claim does not contain this value |
 
 ## API
 
@@ -124,6 +168,77 @@ Failure responses:
 ### `GET /healthz`
 
 Returns `200 OK` with body `ok`.
+
+## JWT/JWKS validation gate
+
+When `JWKS_URL` is set, DexTokenBroker acts as a trusted-auth gateway: every request to `/check` must carry a valid JWT in the configured header (`JWT_HEADER`, default `Authorization`). The broker validates the JWT signature against the JWKS endpoint and checks standard claims before exchanging static credentials with Dex.
+
+This mode requires `STATIC_CLIENT_ID` and `STATIC_CLIENT_SECRET` to be set. The broker uses those credentials for all Dex token requests once the incoming JWT is verified.
+
+**What is validated:**
+
+- JWT signature against public keys from the JWKS endpoint (RSA and ECDSA)
+- Algorithm allowlist: only `RS256`, `RS384`, `RS512`, `ES256`, `ES384`, `ES512`
+- Algorithm must match the key's registered algorithm in JWKS
+- `exp` claim is required and must not be in the past
+- `nbf` claim, if present, must be in the past
+- `iss` claim, if `JWT_ISSUER` is configured, must match exactly
+- `aud` claim, if `JWT_AUDIENCE` is configured, must contain the expected value
+- Minimum RSA key size of 2048 bits
+- Maximum JWT size of 16 KB
+
+**JWKS key caching:**
+
+Keys are fetched lazily on the first request and cached in memory. If a JWT presents an unknown `kid`, the broker refreshes the JWKS endpoint (rate-limited to once per 5 minutes to prevent abuse).
+
+**Example configuration:**
+
+```bash
+JWKS_URL=https://auth.example.com/.well-known/jwks.json
+JWT_HEADER=Authorization
+JWT_ISSUER=https://auth.example.com
+JWT_AUDIENCE=my-service
+STATIC_CLIENT_ID=dex-client
+STATIC_CLIENT_SECRET=dex-secret
+STATIC_SCOPE=openid email profile groups
+```
+
+## Token header mapping
+
+By default, the broker returns a single `Authorization: Bearer <token>` header. With `UPSTREAM_TOKEN_HEADERS`, you can expose additional fields from the Dex token response as separate response headers. Envoy's `headersToBackend` can then forward them to the backend.
+
+**Format:** comma-separated `json_field:header_name` pairs. If `:header_name` is omitted, the JSON field name is used as the header name.
+
+**Examples:**
+
+```bash
+# Expose access_token as a raw header (no Bearer prefix)
+UPSTREAM_TOKEN_HEADERS=access_token
+
+# Map to a custom header name
+UPSTREAM_TOKEN_HEADERS=access_token:X-Access-Token
+
+# Multiple mappings
+UPSTREAM_TOKEN_HEADERS=access_token,token_type:X-Token-Type
+```
+
+Any string or numeric field from the Dex token response JSON can be mapped. The mapped values are cached alongside the token, so no extra overhead on cache hits.
+
+**Envoy Gateway SecurityPolicy with extra headers:**
+
+```yaml
+extAuth:
+  headersToExtAuth:
+    - Authorization
+  http:
+    backendRefs:
+      - name: dex-token-broker
+        port: 8080
+    path: /check
+    headersToBackend:
+      - Authorization
+      - access_token
+```
 
 ## Local development
 
@@ -196,17 +311,13 @@ Example configuration files:
 
 The simplest pattern is to have DexTokenBroker return the final `Authorization` header and let Envoy forward that header upstream.
 
-Conceptually the setup looks like this:
+### Standard mode
 
 1. The client calls an `HTTPRoute` on Envoy Gateway.
 2. Envoy sends an `ext_authz` request to DexTokenBroker at `/check`.
 3. Envoy forwards `x-client-id`, `x-client-secret`, and optionally `x-scope` to DexTokenBroker.
 4. DexTokenBroker returns `Authorization: Bearer <token>`.
 5. Envoy forwards that `Authorization` header to the backend service.
-
-If you change `UPSTREAM_AUTH_HEADER`, Envoy must forward that header name instead.
-
-Example `SecurityPolicy` shape:
 
 ```yaml
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -231,6 +342,35 @@ spec:
       headersToBackend:
         - Authorization
 ```
+
+### JWKS validation mode with extra headers
+
+When `JWKS_URL` is set, the broker validates the caller's JWT and exchanges fixed credentials with Dex. Use `UPSTREAM_TOKEN_HEADERS` to expose additional token fields as headers that Envoy can forward.
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: dex-token-broker
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: my-api
+  extAuth:
+    headersToExtAuth:
+      - Authorization
+    http:
+      backendRefs:
+        - name: dex-token-broker
+          port: 8080
+      path: /check
+      headersToBackend:
+        - Authorization
+        - access_token
+```
+
+If you change `UPSTREAM_AUTH_HEADER`, Envoy must forward that header name instead.
 
 Field names and placement have shifted across some Envoy Gateway releases, so treat the YAML above as the target pattern and align it with the exact version of Envoy Gateway you deploy.
 
@@ -304,12 +444,14 @@ The broker also deduplicates concurrent cache misses per cache key, which helps 
 ## Security notes
 
 - Always use TLS between clients, Envoy Gateway, DexTokenBroker, and Dex.
-- DexTokenBroker rejects insecure `http://` Dex endpoints by default. If you intentionally run Dex over plain HTTP, set `ALLOW_INSECURE_DEX_URL=true`.
+- DexTokenBroker rejects insecure `http://` Dex and JWKS endpoints by default. If you intentionally run them over plain HTTP, set `ALLOW_INSECURE_DEX_URL=true`.
 - Do not log client secrets.
 - `x-client-id`, `x-client-secret`, and `x-scope` are length-limited and rejected if they contain control characters.
 - Dex token responses are size-limited and the broker rejects non-Bearer token types.
 - If all traffic should use one fixed machine client, prefer storing the credentials in Kubernetes Secrets and letting DexTokenBroker own them instead of forwarding credentials from external clients.
 - `STATIC_CLIENT_ID` and `STATIC_CLIENT_SECRET` are intended for that fixed machine-client mode.
+- When `JWKS_URL` is set, configure `JWT_ISSUER` and `JWT_AUDIENCE` to prevent token reuse across services.
+- JWT validation enforces an explicit algorithm allowlist (RS256/384/512, ES256/384/512), rejects `alg=none` and symmetric algorithms, requires the `exp` claim, enforces minimum RSA key sizes (2048 bits), and rate-limits JWKS refresh to prevent endpoint abuse.
 - The in-memory cache is pod-local by design. That keeps the service simple, but each replica has its own cache.
 - The published container image is non-root, distroless, emits SBOM/provenance on release, and is scanned in CI.
 
