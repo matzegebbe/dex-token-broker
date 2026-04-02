@@ -31,6 +31,16 @@ type Config struct {
 	StaticClientID       string
 	StaticClientSecret   string
 	StaticScope          string
+	JWKSURL              string
+	JWTHeader            string
+	JWTIssuer            string
+	JWTAudience          string
+	UpstreamTokenHeaders string
+}
+
+type tokenHeaderMapping struct {
+	jsonField  string
+	headerName string
 }
 
 type Service struct {
@@ -46,6 +56,9 @@ type Service struct {
 	staticClientID       string
 	staticClientSecret   string
 	staticScope          string
+	jwks                 *jwksValidator
+	jwtHeader            string
+	tokenHeaderMappings  []tokenHeaderMapping
 	cacheCleanupInterval time.Duration
 	expirySafetyMargin   time.Duration
 }
@@ -57,8 +70,9 @@ type oauthTokenResponse struct {
 }
 
 type cachedToken struct {
-	Token     string
-	ExpiresAt time.Time
+	Token        string
+	ExpiresAt    time.Time
+	ExtraHeaders map[string]string
 }
 
 const (
@@ -134,11 +148,50 @@ func New(cfg Config, logger *slog.Logger) (*Service, error) {
 		}
 	}
 
+	httpClient := &http.Client{Timeout: timeout, Transport: transport}
+
+	var jwksVal *jwksValidator
+	var jwtHeaderName string
+	if cfg.JWKSURL != "" {
+		if cfg.StaticClientID == "" || cfg.StaticClientSecret == "" {
+			return nil, errors.New("STATIC_CLIENT_ID and STATIC_CLIENT_SECRET must be set when JWKS_URL is configured")
+		}
+
+		parsed, err := url.Parse(cfg.JWKSURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid JWKS URL: %w", err)
+		}
+		if parsed.Scheme != "https" && parsed.Scheme != "http" {
+			return nil, fmt.Errorf("JWKS URL scheme must be http or https: %q", parsed.Scheme)
+		}
+		if parsed.Scheme != "https" && !cfg.AllowInsecureDexURL {
+			return nil, errors.New("JWKS URL must use https unless ALLOW_INSECURE_DEX_URL=true")
+		}
+		if parsed.Host == "" {
+			return nil, errors.New("JWKS URL host must not be empty")
+		}
+
+		jwtHeaderName, err = normalizeHeaderName(cfg.JWTHeader, "Authorization")
+		if err != nil {
+			return nil, fmt.Errorf("invalid JWT header: %w", err)
+		}
+
+		jwksVal = newJWKSValidator(parsed.String(), cfg.JWTIssuer, cfg.JWTAudience, httpClient, logger)
+	}
+
+	var tokenHeaderMappings []tokenHeaderMapping
+	if cfg.UpstreamTokenHeaders != "" {
+		tokenHeaderMappings, err = parseTokenHeaderMappings(cfg.UpstreamTokenHeaders)
+		if err != nil {
+			return nil, fmt.Errorf("invalid upstream token headers: %w", err)
+		}
+	}
+
 	return &Service{
 		cache:                newTokenCache(cfg.CacheMaxEntries),
 		flights:              newFlightGroup(),
 		logger:               logger,
-		httpClient:           &http.Client{Timeout: timeout, Transport: transport},
+		httpClient:           httpClient,
 		dexTokenURL:          dexTokenURL,
 		upstreamAuthHeader:   upstreamAuthHeader,
 		clientIDHeader:       clientIDHeader,
@@ -147,6 +200,9 @@ func New(cfg Config, logger *slog.Logger) (*Service, error) {
 		staticClientID:       cfg.StaticClientID,
 		staticClientSecret:   cfg.StaticClientSecret,
 		staticScope:          cfg.StaticScope,
+		jwks:                 jwksVal,
+		jwtHeader:            jwtHeaderName,
+		tokenHeaderMappings:  tokenHeaderMappings,
 		cacheCleanupInterval: cleanupInterval,
 		expirySafetyMargin:   expiryMargin,
 	}, nil
@@ -172,6 +228,14 @@ func (s *Service) CheckHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.jwks != nil {
+		if err := s.validateIncomingJWT(r); err != nil {
+			s.logger.Warn("JWT validation failed", "error", err)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	clientID, clientSecret, scope := s.credentialsForRequest(r)
 
 	if err := validateInboundHeaders(clientID, clientSecret, scope, s.clientIDHeader, s.clientSecretHeader, s.scopeHeader); err != nil {
@@ -187,23 +251,28 @@ func (s *Service) CheckHandler(w http.ResponseWriter, r *http.Request) {
 	cacheKey := buildCacheKey(clientID, clientSecret, scope)
 
 	if entry, ok := s.cache.Get(cacheKey); ok {
-		s.writeAuthorized(w, entry.Token)
+		s.writeAuthorized(w, entry)
 		return
 	}
 
-	token, err := s.flights.Do(cacheKey, func() (string, error) {
+	result, err := s.flights.Do(cacheKey, func() (cachedToken, error) {
 		if entry, ok := s.cache.Get(cacheKey); ok {
-			return entry.Token, nil
+			return entry, nil
 		}
 
-		response, err := s.requestToken(r.Context(), clientID, clientSecret, scope)
+		response, extraHeaders, err := s.requestToken(r.Context(), clientID, clientSecret, scope)
 		if err != nil {
-			return "", err
+			return cachedToken{}, err
 		}
 
-		s.cache.Set(cacheKey, response.AccessToken, s.computeExpiry(response.ExpiresIn))
+		entry := cachedToken{
+			Token:        response.AccessToken,
+			ExpiresAt:    s.computeExpiry(response.ExpiresIn),
+			ExtraHeaders: extraHeaders,
+		}
+		s.cache.Set(cacheKey, entry.Token, entry.ExpiresAt, extraHeaders)
 
-		return response.AccessToken, nil
+		return entry, nil
 	})
 	if err != nil {
 		var requestErr *tokenRequestError
@@ -224,12 +293,15 @@ func (s *Service) CheckHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.writeAuthorized(w, token)
+	s.writeAuthorized(w, result)
 }
 
-func (s *Service) writeAuthorized(w http.ResponseWriter, accessToken string) {
+func (s *Service) writeAuthorized(w http.ResponseWriter, entry cachedToken) {
 	setCommonResponseHeaders(w)
-	w.Header().Set(s.upstreamAuthHeader, "Bearer "+accessToken)
+	w.Header().Set(s.upstreamAuthHeader, "Bearer "+entry.Token)
+	for name, value := range entry.ExtraHeaders {
+		w.Header().Set(name, value)
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -241,7 +313,21 @@ func (s *Service) credentialsForRequest(r *http.Request) (clientID, clientSecret
 	return strings.TrimSpace(r.Header.Get(s.clientIDHeader)), r.Header.Get(s.clientSecretHeader), strings.TrimSpace(r.Header.Get(s.scopeHeader))
 }
 
-func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scope string) (oauthTokenResponse, error) {
+func (s *Service) validateIncomingJWT(r *http.Request) error {
+	headerValue := r.Header.Get(s.jwtHeader)
+	if headerValue == "" {
+		return errors.New("missing JWT")
+	}
+
+	token := extractBearerToken(headerValue)
+	if token == "" {
+		return errors.New("empty bearer token")
+	}
+
+	return s.jwks.ValidateToken(r.Context(), token)
+}
+
+func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scope string) (oauthTokenResponse, map[string]string, error) {
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
 
@@ -251,7 +337,7 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.dexTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return oauthTokenResponse{}, &tokenRequestError{
+		return oauthTokenResponse{}, nil, &tokenRequestError{
 			StatusCode: http.StatusInternalServerError,
 			Message:    "failed to build token request",
 			Cause:      err,
@@ -263,7 +349,7 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return oauthTokenResponse{}, &tokenRequestError{
+		return oauthTokenResponse{}, nil, &tokenRequestError{
 			StatusCode: http.StatusServiceUnavailable,
 			Message:    "oauth provider unavailable",
 			Cause:      err,
@@ -273,7 +359,7 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseSize+1))
 	if err != nil {
-		return oauthTokenResponse{}, &tokenRequestError{
+		return oauthTokenResponse{}, nil, &tokenRequestError{
 			StatusCode: http.StatusBadGateway,
 			Message:    "failed to read token response",
 			Cause:      err,
@@ -281,7 +367,7 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 	}
 
 	if len(body) > maxTokenResponseSize {
-		return oauthTokenResponse{}, &tokenRequestError{
+		return oauthTokenResponse{}, nil, &tokenRequestError{
 			StatusCode: http.StatusBadGateway,
 			Message:    "token response too large",
 			Cause:      errors.New("oauth response exceeded size limit"),
@@ -289,7 +375,7 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return oauthTokenResponse{}, &tokenRequestError{
+		return oauthTokenResponse{}, nil, &tokenRequestError{
 			StatusCode: mapUpstreamStatus(resp.StatusCode),
 			Message:    "token request failed",
 			Cause:      fmt.Errorf("oauth provider returned %s: %s", resp.Status, truncateBody(body)),
@@ -298,7 +384,7 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 
 	var token oauthTokenResponse
 	if err := json.Unmarshal(body, &token); err != nil {
-		return oauthTokenResponse{}, &tokenRequestError{
+		return oauthTokenResponse{}, nil, &tokenRequestError{
 			StatusCode: http.StatusBadGateway,
 			Message:    "invalid token response",
 			Cause:      err,
@@ -306,14 +392,14 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 	}
 
 	if err := validateTokenResponse(token); err != nil {
-		return oauthTokenResponse{}, &tokenRequestError{
+		return oauthTokenResponse{}, nil, &tokenRequestError{
 			StatusCode: http.StatusBadGateway,
 			Message:    "invalid token response",
 			Cause:      err,
 		}
 	}
 
-	return token, nil
+	return token, s.extractTokenHeaders(body), nil
 }
 
 func (s *Service) computeExpiry(expiresIn int) time.Time {
@@ -425,6 +511,80 @@ func validateTokenResponse(token oauthTokenResponse) error {
 	}
 
 	return nil
+}
+
+func (s *Service) extractTokenHeaders(body []byte) map[string]string {
+	if len(s.tokenHeaderMappings) == 0 {
+		return nil
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+
+	headers := make(map[string]string, len(s.tokenHeaderMappings))
+	for _, m := range s.tokenHeaderMappings {
+		val, ok := raw[m.jsonField]
+		if !ok {
+			continue
+		}
+
+		strVal := formatJSONValue(val)
+		if strVal != "" && !hasInvalidHeaderValue(strVal) {
+			headers[m.headerName] = strVal
+		}
+	}
+	return headers
+}
+
+func formatJSONValue(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case float64:
+		if val == float64(int64(val)) {
+			return fmt.Sprintf("%d", int64(val))
+		}
+		return fmt.Sprintf("%g", val)
+	default:
+		return ""
+	}
+}
+
+func parseTokenHeaderMappings(raw string) ([]tokenHeaderMapping, error) {
+	var mappings []tokenHeaderMapping
+
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		jsonField, headerName, hasSep := strings.Cut(part, ":")
+		jsonField = strings.TrimSpace(jsonField)
+		if !hasSep {
+			headerName = jsonField
+		} else {
+			headerName = strings.TrimSpace(headerName)
+		}
+
+		if jsonField == "" {
+			return nil, errors.New("empty field name in token header mapping")
+		}
+
+		normalized, err := normalizeHeaderName(headerName, headerName)
+		if err != nil {
+			return nil, fmt.Errorf("invalid header name %q in token header mapping: %w", headerName, err)
+		}
+
+		mappings = append(mappings, tokenHeaderMapping{
+			jsonField:  jsonField,
+			headerName: normalized,
+		})
+	}
+
+	return mappings, nil
 }
 
 func buildCacheKey(clientID, clientSecret, scope string) string {
@@ -553,7 +713,7 @@ func (c *tokenCache) Get(key string) (cachedToken, bool) {
 	return entry, true
 }
 
-func (c *tokenCache) Set(key, token string, expiresAt time.Time) {
+func (c *tokenCache) Set(key, token string, expiresAt time.Time, extraHeaders map[string]string) {
 	c.mu.Lock()
 	if c.maxEntries == 0 {
 		c.mu.Unlock()
@@ -567,8 +727,9 @@ func (c *tokenCache) Set(key, token string, expiresAt time.Time) {
 		}
 	}
 	c.items[key] = cachedToken{
-		Token:     token,
-		ExpiresAt: expiresAt,
+		Token:        token,
+		ExpiresAt:    expiresAt,
+		ExtraHeaders: extraHeaders,
 	}
 	c.mu.Unlock()
 }
@@ -645,9 +806,9 @@ type flightGroup struct {
 }
 
 type flightCall struct {
-	done  chan struct{}
-	token string
-	err   error
+	done   chan struct{}
+	result cachedToken
+	err    error
 }
 
 func newFlightGroup() *flightGroup {
@@ -656,24 +817,24 @@ func newFlightGroup() *flightGroup {
 	}
 }
 
-func (g *flightGroup) Do(key string, fn func() (string, error)) (string, error) {
+func (g *flightGroup) Do(key string, fn func() (cachedToken, error)) (cachedToken, error) {
 	g.mu.Lock()
 	if call, ok := g.calls[key]; ok {
 		g.mu.Unlock()
 		<-call.done
-		return call.token, call.err
+		return call.result, call.err
 	}
 
 	call := &flightCall{done: make(chan struct{})}
 	g.calls[key] = call
 	g.mu.Unlock()
 
-	call.token, call.err = fn()
+	call.result, call.err = fn()
 	close(call.done)
 
 	g.mu.Lock()
 	delete(g.calls, key)
 	g.mu.Unlock()
 
-	return call.token, call.err
+	return call.result, call.err
 }

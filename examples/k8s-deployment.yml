@@ -7,6 +7,9 @@ stringData:
   STATIC_CLIENT_ID: ""
   STATIC_CLIENT_SECRET: ""
   STATIC_SCOPE: ""
+  JWKS_URL: ""
+  JWT_ISSUER: ""
+  JWT_AUDIENCE: ""
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -52,6 +55,8 @@ spec:
               value: "false"
             - name: UPSTREAM_AUTH_HEADER
               value: "Authorization"
+            - name: UPSTREAM_TOKEN_HEADERS
+              value: ""
             - name: CLIENT_ID_HEADER
               value: "x-client-id"
             - name: CLIENT_SECRET_HEADER
@@ -75,6 +80,26 @@ spec:
                 secretKeyRef:
                   name: dex-token-broker
                   key: STATIC_SCOPE
+                  optional: true
+            - name: JWKS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dex-token-broker
+                  key: JWKS_URL
+                  optional: true
+            - name: JWT_HEADER
+              value: "Authorization"
+            - name: JWT_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: dex-token-broker
+                  key: JWT_ISSUER
+                  optional: true
+            - name: JWT_AUDIENCE
+              valueFrom:
+                secretKeyRef:
+                  name: dex-token-broker
+                  key: JWT_AUDIENCE
                   optional: true
           readinessProbe:
             httpGet:

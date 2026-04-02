@@ -156,6 +156,11 @@ func loadConfig() (runtimeConfig, error) {
 	staticClientID := os.Getenv("STATIC_CLIENT_ID")
 	staticClientSecret := os.Getenv("STATIC_CLIENT_SECRET")
 	staticScope := os.Getenv("STATIC_SCOPE")
+	jwksURL := os.Getenv("JWKS_URL")
+	jwtHeader := getenv("JWT_HEADER", "Authorization")
+	jwtIssuer := os.Getenv("JWT_ISSUER")
+	jwtAudience := os.Getenv("JWT_AUDIENCE")
+	upstreamTokenHeaders := os.Getenv("UPSTREAM_TOKEN_HEADERS")
 	allowInsecureDexURL, err := boolFromEnv("ALLOW_INSECURE_DEX_URL", false)
 	if err != nil {
 		return runtimeConfig{}, err
@@ -179,6 +184,11 @@ func loadConfig() (runtimeConfig, error) {
 			StaticClientID:       staticClientID,
 			StaticClientSecret:   staticClientSecret,
 			StaticScope:          staticScope,
+			JWKSURL:              jwksURL,
+			JWTHeader:            jwtHeader,
+			JWTIssuer:            jwtIssuer,
+			JWTAudience:          jwtAudience,
+			UpstreamTokenHeaders: upstreamTokenHeaders,
 		},
 	}, nil
 }

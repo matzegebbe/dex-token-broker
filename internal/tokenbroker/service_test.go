@@ -103,8 +103,8 @@ func TestCacheCleanupExpiredRemovesEntries(t *testing.T) {
 	t.Parallel()
 
 	cache := newTokenCache(16)
-	cache.Set("expired", "token-a", time.Now().Add(-time.Second))
-	cache.Set("valid", "token-b", time.Now().Add(time.Minute))
+	cache.Set("expired", "token-a", time.Now().Add(-time.Second), nil)
+	cache.Set("valid", "token-b", time.Now().Add(time.Minute), nil)
 
 	removed, remaining := cache.CleanupExpired()
 
@@ -121,7 +121,7 @@ func TestStartJanitorStopsWithContext(t *testing.T) {
 	t.Parallel()
 
 	cache := newTokenCache(16)
-	cache.Set("expired", "token-a", time.Now().Add(-time.Second))
+	cache.Set("expired", "token-a", time.Now().Add(-time.Second), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cache.StartJanitor(ctx, 10*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -361,9 +361,9 @@ func TestCacheEvictsSoonestExpiringEntryAtCapacity(t *testing.T) {
 	t.Parallel()
 
 	cache := newTokenCache(2)
-	cache.Set("a", "token-a", time.Now().Add(1*time.Minute))
-	cache.Set("b", "token-b", time.Now().Add(2*time.Minute))
-	cache.Set("c", "token-c", time.Now().Add(3*time.Minute))
+	cache.Set("a", "token-a", time.Now().Add(1*time.Minute), nil)
+	cache.Set("b", "token-b", time.Now().Add(2*time.Minute), nil)
+	cache.Set("c", "token-c", time.Now().Add(3*time.Minute), nil)
 
 	if _, ok := cache.Get("a"); ok {
 		t.Fatal("expected soonest expiring entry to be evicted")
