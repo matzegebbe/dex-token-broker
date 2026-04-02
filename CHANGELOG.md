@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/matzegebbe/dex-token-broker/compare/v0.3.0...v0.4.0) (2026-04-02)
+
+
+### Features
+
+* register /check/ subtree route for ext auth subpath matching ([#18](https://github.com/matzegebbe/dex-token-broker/issues/18)) ([fee5027](https://github.com/matzegebbe/dex-token-broker/commit/fee50278afe0dbfb8b06f88dcf927f00f13e3ad8))
+
 ## [0.3.0](https://github.com/matzegebbe/dex-token-broker/compare/v0.2.2...v0.3.0) (2026-04-02)
 
 
