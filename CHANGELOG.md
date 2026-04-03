@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/matzegebbe/dex-token-broker/compare/v0.4.0...v0.4.1) (2026-04-03)
+
+
+### Bug Fixes
+
+* disable HTTP redirect following on token requests ([#20](https://github.com/matzegebbe/dex-token-broker/issues/20)) ([94f3d0d](https://github.com/matzegebbe/dex-token-broker/commit/94f3d0df5634abd5295167978f6cec68caaec474))
+
 ## [0.4.0](https://github.com/matzegebbe/dex-token-broker/compare/v0.3.0...v0.4.0) (2026-04-02)
 
 
