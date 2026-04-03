@@ -148,7 +148,13 @@ func New(cfg Config, logger *slog.Logger) (*Service, error) {
 		}
 	}
 
-	httpClient := &http.Client{Timeout: timeout, Transport: transport}
+	httpClient := &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
 	var jwksVal *jwksValidator
 	var jwtHeaderName string
