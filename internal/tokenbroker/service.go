@@ -229,7 +229,10 @@ func (s *Service) CheckHandler(w http.ResponseWriter, r *http.Request) {
 	setCommonResponseHeaders(w)
 	defer r.Body.Close()
 
+	s.logger.Debug("incoming request", "method", r.Method, "path", r.URL.Path, "remote_addr", r.RemoteAddr)
+
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		s.logger.Debug("rejecting request", "reason", "method not allowed", "method", r.Method)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -240,16 +243,21 @@ func (s *Service) CheckHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		s.logger.Debug("JWT validation passed")
 	}
 
 	clientID, clientSecret, scope := s.credentialsForRequest(r)
 
+	s.logger.Debug("resolved credentials", "client_id", clientID, "scope", scope, "static", s.staticClientID != "")
+
 	if err := validateInboundHeaders(clientID, clientSecret, scope, s.clientIDHeader, s.clientSecretHeader, s.scopeHeader); err != nil {
 		var requestErr *tokenRequestError
 		if errors.As(err, &requestErr) {
+			s.logger.Debug("request validation failed", "status_code", requestErr.StatusCode, "message", requestErr.Message)
 			http.Error(w, requestErr.Message, requestErr.StatusCode)
 			return
 		}
+		s.logger.Debug("request validation failed", "error", err)
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
@@ -257,9 +265,12 @@ func (s *Service) CheckHandler(w http.ResponseWriter, r *http.Request) {
 	cacheKey := buildCacheKey(clientID, clientSecret, scope)
 
 	if entry, ok := s.cache.Get(cacheKey); ok {
+		s.logger.Debug("cache hit", "client_id", clientID, "scope", scope)
 		s.writeAuthorized(w, entry)
 		return
 	}
+
+	s.logger.Debug("cache miss, requesting token", "client_id", clientID, "scope", scope)
 
 	result, err := s.flights.Do(cacheKey, func() (cachedToken, error) {
 		if entry, ok := s.cache.Get(cacheKey); ok {
@@ -309,6 +320,7 @@ func (s *Service) writeAuthorized(w http.ResponseWriter, entry cachedToken) {
 		w.Header().Set(name, value)
 	}
 	w.WriteHeader(http.StatusOK)
+	s.logger.Debug("authorized response sent", "auth_header", s.upstreamAuthHeader, "extra_headers", len(entry.ExtraHeaders))
 }
 
 func (s *Service) credentialsForRequest(r *http.Request) (clientID, clientSecret, scope string) {
@@ -353,8 +365,11 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(clientID, clientSecret)
 
+	s.logger.Debug("outgoing token request", "method", http.MethodPost, "url", s.dexTokenURL, "client_id", clientID, "scope", scope)
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		s.logger.Debug("token request failed", "error", err)
 		return oauthTokenResponse{}, nil, &tokenRequestError{
 			StatusCode: http.StatusServiceUnavailable,
 			Message:    "oauth provider unavailable",
@@ -362,6 +377,8 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 		}
 	}
 	defer resp.Body.Close()
+
+	s.logger.Debug("token response received", "status", resp.StatusCode, "content_length", resp.ContentLength)
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseSize+1))
 	if err != nil {
@@ -381,6 +398,7 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		s.logger.Debug("token request upstream error", "status", resp.StatusCode, "body", truncateBody(body))
 		return oauthTokenResponse{}, nil, &tokenRequestError{
 			StatusCode: mapUpstreamStatus(resp.StatusCode),
 			Message:    "token request failed",
@@ -404,6 +422,8 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 			Cause:      err,
 		}
 	}
+
+	s.logger.Debug("token acquired", "token_type", token.TokenType, "expires_in", token.ExpiresIn)
 
 	return token, s.extractTokenHeaders(body), nil
 }
