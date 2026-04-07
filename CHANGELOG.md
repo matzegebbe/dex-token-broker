@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/matzegebbe/dex-token-broker/compare/v0.4.1...v0.5.0) (2026-04-07)
+
+
+### Features
+
+* add debug logging for incoming and outgoing HTTP requests ([#22](https://github.com/matzegebbe/dex-token-broker/issues/22)) ([5e97edc](https://github.com/matzegebbe/dex-token-broker/commit/5e97edc7ee6eb4166e69e49925a1252e2c6a18c8))
+
 ## [0.4.1](https://github.com/matzegebbe/dex-token-broker/compare/v0.4.0...v0.4.1) (2026-04-03)
 
 
