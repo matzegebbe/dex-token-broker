@@ -138,14 +138,8 @@ func New(cfg Config, logger *slog.Logger) (*Service, error) {
 		return nil, errors.New("cache max entries must be greater than or equal to zero")
 	}
 
-	staticEnabled := cfg.StaticClientID != "" || cfg.StaticClientSecret != "" || cfg.StaticScope != ""
-	if staticEnabled {
-		if cfg.StaticClientID == "" || cfg.StaticClientSecret == "" {
-			return nil, errors.New("STATIC_CLIENT_ID and STATIC_CLIENT_SECRET must both be set when static credentials are enabled")
-		}
-		if err := validateInboundHeaders(cfg.StaticClientID, cfg.StaticClientSecret, cfg.StaticScope, clientIDHeader, clientSecretHeader, scopeHeader); err != nil {
-			return nil, fmt.Errorf("invalid static credentials: %w", err)
-		}
+	if err := validateStaticCredentials(cfg.StaticClientID, cfg.StaticClientSecret, cfg.StaticScope, clientIDHeader, clientSecretHeader, scopeHeader); err != nil {
+		return nil, fmt.Errorf("invalid static credentials: %w", err)
 	}
 
 	httpClient := &http.Client{
@@ -159,8 +153,8 @@ func New(cfg Config, logger *slog.Logger) (*Service, error) {
 	var jwksVal *jwksValidator
 	var jwtHeaderName string
 	if cfg.JWKSURL != "" {
-		if cfg.StaticClientID == "" || cfg.StaticClientSecret == "" {
-			return nil, errors.New("STATIC_CLIENT_ID and STATIC_CLIENT_SECRET must be set when JWKS_URL is configured")
+		if cfg.StaticClientID == "" {
+			return nil, errors.New("STATIC_CLIENT_ID must be set when JWKS_URL is configured")
 		}
 
 		parsed, err := url.Parse(cfg.JWKSURL)
@@ -324,11 +318,20 @@ func (s *Service) writeAuthorized(w http.ResponseWriter, entry cachedToken) {
 }
 
 func (s *Service) credentialsForRequest(r *http.Request) (clientID, clientSecret, scope string) {
-	if s.staticClientID != "" || s.staticClientSecret != "" {
-		return s.staticClientID, s.staticClientSecret, s.staticScope
-	}
+	clientID = strings.TrimSpace(r.Header.Get(s.clientIDHeader))
+	clientSecret = r.Header.Get(s.clientSecretHeader)
+	scope = strings.TrimSpace(r.Header.Get(s.scopeHeader))
 
-	return strings.TrimSpace(r.Header.Get(s.clientIDHeader)), r.Header.Get(s.clientSecretHeader), strings.TrimSpace(r.Header.Get(s.scopeHeader))
+	if s.staticClientID != "" {
+		clientID = s.staticClientID
+	}
+	if s.staticClientSecret != "" {
+		clientSecret = s.staticClientSecret
+	}
+	if s.staticScope != "" {
+		scope = s.staticScope
+	}
+	return clientID, clientSecret, scope
 }
 
 func (s *Service) validateIncomingJWT(r *http.Request) error {
@@ -470,6 +473,34 @@ func validateDexTokenURL(rawURL string, allowInsecure bool) (string, error) {
 	}
 
 	return parsed.String(), nil
+}
+
+func validateStaticCredentials(clientID, clientSecret, scope, clientIDHeader, clientSecretHeader, scopeHeader string) error {
+	if clientID != "" {
+		if len(clientID) > maxClientIDLength {
+			return fmt.Errorf("%s too long", clientIDHeader)
+		}
+		if hasInvalidHeaderValue(clientID) {
+			return fmt.Errorf("%s contains invalid characters", clientIDHeader)
+		}
+	}
+	if clientSecret != "" {
+		if len(clientSecret) > maxClientSecretLength {
+			return fmt.Errorf("%s too long", clientSecretHeader)
+		}
+		if hasInvalidHeaderValue(clientSecret) {
+			return fmt.Errorf("%s contains invalid characters", clientSecretHeader)
+		}
+	}
+	if scope != "" {
+		if len(scope) > maxScopeLength {
+			return fmt.Errorf("%s too long", scopeHeader)
+		}
+		if hasInvalidHeaderValue(scope) {
+			return fmt.Errorf("%s contains invalid characters", scopeHeader)
+		}
+	}
+	return nil
 }
 
 func validateInboundHeaders(clientID, clientSecret, scope, clientIDHeader, clientSecretHeader, scopeHeader string) error {

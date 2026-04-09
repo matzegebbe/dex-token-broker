@@ -333,15 +333,45 @@ func TestCheckHandlerUsesConfiguredHeaderNames(t *testing.T) {
 	}
 }
 
-func TestNewRejectsPartialStaticCredentials(t *testing.T) {
+func TestNewAcceptsPartialStaticCredentials(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(Config{
-		DexTokenURL:    "https://dex.example/token",
-		StaticClientID: "static-client",
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err == nil {
-		t.Fatal("expected partial static credentials to be rejected")
+	tests := []struct {
+		name   string
+		config Config
+	}{
+		{
+			name: "only client ID",
+			config: Config{
+				DexTokenURL:    "https://dex.example/token",
+				StaticClientID: "static-client",
+			},
+		},
+		{
+			name: "only scope",
+			config: Config{
+				DexTokenURL: "https://dex.example/token",
+				StaticScope: "openid",
+			},
+		},
+		{
+			name: "client ID and scope without secret",
+			config: Config{
+				DexTokenURL:    "https://dex.example/token",
+				StaticClientID: "static-client",
+				StaticScope:    "openid",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := New(tt.config, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if err != nil {
+				t.Fatalf("expected partial static credentials to be accepted, got: %v", err)
+			}
+		})
 	}
 }
 

@@ -132,9 +132,9 @@ DexTokenBroker is configured with environment variables:
 | `CLIENT_ID_HEADER` | `x-client-id` | Header name used to read the OAuth client ID |
 | `CLIENT_SECRET_HEADER` | `x-client-secret` | Header name used to read the OAuth client secret |
 | `SCOPE_HEADER` | `x-scope` | Header name used to read the OAuth scope |
-| `STATIC_CLIENT_ID` | empty | Fixed OAuth client ID; when set together with `STATIC_CLIENT_SECRET`, incoming credential headers are ignored |
-| `STATIC_CLIENT_SECRET` | empty | Fixed OAuth client secret for static credential mode |
-| `STATIC_SCOPE` | empty | Fixed OAuth scope for static credential mode (e.g. `openid email profile groups`) |
+| `STATIC_CLIENT_ID` | empty | Fixed OAuth client ID; overrides the incoming client-ID header |
+| `STATIC_CLIENT_SECRET` | empty | Fixed OAuth client secret; overrides the incoming client-secret header |
+| `STATIC_SCOPE` | empty | Fixed OAuth scope; overrides the incoming scope header (e.g. `openid email profile groups`) |
 | `JWKS_URL` | empty | JWKS endpoint URL; when set, incoming requests must carry a valid JWT (see [JWT/JWKS validation](#jwtjwks-validation-gate)) |
 | `JWT_HEADER` | `Authorization` | Header to read the incoming JWT from |
 | `JWT_ISSUER` | empty | If set, reject JWTs whose `iss` claim does not match |
@@ -173,7 +173,7 @@ Returns `200 OK` with body `ok`.
 
 When `JWKS_URL` is set, DexTokenBroker acts as a trusted-auth gateway: every request to `/check` must carry a valid JWT in the configured header (`JWT_HEADER`, default `Authorization`). The broker validates the JWT signature against the JWKS endpoint and checks standard claims before exchanging static credentials with Dex.
 
-This mode requires `STATIC_CLIENT_ID` and `STATIC_CLIENT_SECRET` to be set. The broker uses those credentials for all Dex token requests once the incoming JWT is verified.
+This mode requires `STATIC_CLIENT_ID` to be set. `STATIC_CLIENT_SECRET` is optional — if omitted, the secret is read from the incoming request header as usual. The broker uses the resolved credentials for all Dex token requests once the incoming JWT is verified.
 
 **What is validated:**
 
