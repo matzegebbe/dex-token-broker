@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/matzegebbe/dex-token-broker/compare/v0.6.0...v0.7.0) (2026-04-27)
+
+
+### Features
+
+* **ci:** bump aquasecurity/trivy-action from 0.35.0 to 0.36.0 ([#26](https://github.com/matzegebbe/dex-token-broker/issues/26)) ([8042675](https://github.com/matzegebbe/dex-token-broker/commit/8042675c6f9bdfeb27c2fb4016dfe0cf6568d906))
+* **ci:** bump googleapis/release-please-action from 4 to 5 ([#27](https://github.com/matzegebbe/dex-token-broker/issues/27)) ([a3b3830](https://github.com/matzegebbe/dex-token-broker/commit/a3b3830d222d3ca05047c1d3387895ccbc6ebe5d))
+
 ## [0.6.0](https://github.com/matzegebbe/dex-token-broker/compare/v0.5.0...v0.6.0) (2026-04-09)
 
 
