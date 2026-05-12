@@ -2,21 +2,41 @@ version: 2
 updates:
   - package-ecosystem: "gomod"
     directory: "/"
+    target-branch: "main"
     schedule:
-      interval: "weekly"
+      interval: "daily"
+      time: "04:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
     commit-message:
-      prefix: "feat(deps)"
+      prefix: "chore(deps)"
 
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "main"
     schedule:
-      interval: "weekly"
+      interval: "daily"
+      time: "04:10"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "github_actions"
     commit-message:
-      prefix: "feat(ci)"
+      prefix: "chore(ci)"
 
   - package-ecosystem: "docker"
     directory: "/"
+    target-branch: "main"
     schedule:
-      interval: "weekly"
+      interval: "daily"
+      time: "04:20"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "docker"
     commit-message:
-      prefix: "feat(docker)"
+      prefix: "chore(docker)"
