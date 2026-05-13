@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/matzegebbe/dex-token-broker/compare/v0.7.0...v0.8.0) (2026-05-13)
+
+
+### Features
+
+* **docker:** bump golang from 1.26.2 to 1.26.3 ([#29](https://github.com/matzegebbe/dex-token-broker/issues/29)) ([208c182](https://github.com/matzegebbe/dex-token-broker/commit/208c18253644ef4534834f06c84e2b1ccac56232))
+
 ## [0.7.0](https://github.com/matzegebbe/dex-token-broker/compare/v0.6.0...v0.7.0) (2026-04-27)
 
 
