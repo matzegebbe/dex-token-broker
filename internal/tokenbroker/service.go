@@ -242,7 +242,7 @@ func (s *Service) CheckHandler(w http.ResponseWriter, r *http.Request) {
 
 	clientID, clientSecret, scope := s.credentialsForRequest(r)
 
-	s.logger.Debug("resolved credentials", "client_id", clientID, "scope", scope, "static", s.staticClientID != "")
+	s.logger.Debug("resolved credentials", "client_id", clientID, "client_secret", maskSecret(clientSecret), "scope", scope, "static", s.staticClientID != "")
 
 	if err := validateInboundHeaders(clientID, clientSecret, scope, s.clientIDHeader, s.clientSecretHeader, s.scopeHeader); err != nil {
 		var requestErr *tokenRequestError
@@ -259,12 +259,12 @@ func (s *Service) CheckHandler(w http.ResponseWriter, r *http.Request) {
 	cacheKey := buildCacheKey(clientID, clientSecret, scope)
 
 	if entry, ok := s.cache.Get(cacheKey); ok {
-		s.logger.Debug("cache hit", "client_id", clientID, "scope", scope)
+		s.logger.Debug("cache hit", "client_id", clientID, "client_secret", maskSecret(clientSecret), "scope", scope)
 		s.writeAuthorized(w, entry)
 		return
 	}
 
-	s.logger.Debug("cache miss, requesting token", "client_id", clientID, "scope", scope)
+	s.logger.Debug("cache miss, requesting token", "client_id", clientID, "client_secret", maskSecret(clientSecret), "scope", scope)
 
 	result, err := s.flights.Do(cacheKey, func() (cachedToken, error) {
 		if entry, ok := s.cache.Get(cacheKey); ok {
@@ -368,7 +368,7 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(clientID, clientSecret)
 
-	s.logger.Debug("outgoing token request", "method", http.MethodPost, "url", s.dexTokenURL, "client_id", clientID, "scope", scope)
+	s.logger.Debug("outgoing token request", "method", http.MethodPost, "url", s.dexTokenURL, "client_id", clientID, "client_secret", maskSecret(clientSecret), "scope", scope)
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -662,6 +662,14 @@ func mapUpstreamStatus(statusCode int) int {
 	default:
 		return http.StatusUnauthorized
 	}
+}
+
+func maskSecret(s string) string {
+	if s == "" {
+		return ""
+	}
+	r := []rune(s)
+	return string(r[:1]) + strings.Repeat("*", min(len(r)-1, 6))
 }
 
 func truncateBody(body []byte) string {
