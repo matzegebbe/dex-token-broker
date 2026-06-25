@@ -201,6 +201,70 @@ func TestJWKSRejectAlgorithmKeyMismatch(t *testing.T) {
 	}
 }
 
+func TestJWKSRejectDuplicateKid(t *testing.T) {
+	t.Parallel()
+
+	keyA := generateRSAKey(t)
+	keyB := generateRSAKey(t)
+
+	set := jwksSet{
+		Keys: []jwkKey{
+			rsaJWK(&keyA.PublicKey, "duplicate-kid"),
+			rsaJWK(&keyB.PublicKey, "duplicate-kid"),
+		},
+	}
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(set)
+	}))
+	defer jwksServer.Close()
+
+	validator := newTestValidator(jwksServer.URL, "", "")
+	token := signTestJWT(t, keyB, "duplicate-kid", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	err := validator.ValidateToken(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected duplicate kid to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected missing key error, got: %v", err)
+	}
+}
+
+func TestJWKSRejectMultipleUnkeyedKeysForTokenWithoutKid(t *testing.T) {
+	t.Parallel()
+
+	keyA := generateRSAKey(t)
+	keyB := generateRSAKey(t)
+
+	set := jwksSet{
+		Keys: []jwkKey{
+			rsaJWK(&keyA.PublicKey, ""),
+			rsaJWK(&keyB.PublicKey, ""),
+		},
+	}
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(set)
+	}))
+	defer jwksServer.Close()
+
+	validator := newTestValidator(jwksServer.URL, "", "")
+	token := signTestJWT(t, keyB, "", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	err := validator.ValidateToken(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected multiple unkeyed keys to be rejected")
+	}
+	if !strings.Contains(err.Error(), "no kid") {
+		t.Fatalf("expected no kid error, got: %v", err)
+	}
+}
+
 func TestJWKSRejectEmptySignature(t *testing.T) {
 	t.Parallel()
 
@@ -735,19 +799,23 @@ func generateRSAKey(t *testing.T) *rsa.PrivateKey {
 func newJWKSServer(t *testing.T, pub *rsa.PublicKey, kid string) *httptest.Server {
 	t.Helper()
 	set := jwksSet{
-		Keys: []jwkKey{{
-			Kty: "RSA",
-			Kid: kid,
-			Use: "sig",
-			Alg: "RS256",
-			N:   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
-			E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
-		}},
+		Keys: []jwkKey{rsaJWK(pub, kid)},
 	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(set)
 	}))
+}
+
+func rsaJWK(pub *rsa.PublicKey, kid string) jwkKey {
+	return jwkKey{
+		Kty: "RSA",
+		Kid: kid,
+		Use: "sig",
+		Alg: "RS256",
+		N:   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+		E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+	}
 }
 
 func signTestJWT(t *testing.T, key *rsa.PrivateKey, kid string, claims map[string]any) string {

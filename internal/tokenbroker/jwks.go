@@ -295,6 +295,7 @@ func (v *jwksValidator) refresh(ctx context.Context) error {
 	}
 
 	keys := make(map[string]parsedKey, len(set.Keys))
+	duplicateKids := make(map[string]bool)
 	for _, jwk := range set.Keys {
 		if jwk.Use != "" && jwk.Use != "sig" {
 			continue
@@ -303,6 +304,16 @@ func (v *jwksValidator) refresh(ctx context.Context) error {
 		pub, err := parseJWK(jwk)
 		if err != nil {
 			v.logger.Debug("skipping JWK", "kid", jwk.Kid, "error", err)
+			continue
+		}
+
+		if duplicateKids[jwk.Kid] {
+			continue
+		}
+		if _, exists := keys[jwk.Kid]; exists {
+			delete(keys, jwk.Kid)
+			duplicateKids[jwk.Kid] = true
+			v.logger.Debug("skipping duplicate JWK kid", "kid", jwk.Kid)
 			continue
 		}
 
