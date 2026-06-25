@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/matzegebbe/dex-token-broker/compare/v0.8.1...v0.8.2) (2026-06-25)
+
+
+### Bug Fixes
+
+* reject duplicate JWKS key IDs ([#37](https://github.com/matzegebbe/dex-token-broker/issues/37)) ([0c373bf](https://github.com/matzegebbe/dex-token-broker/commit/0c373bf500f6c0777d4c3b7bfabe8f015237c534))
+
 ## [0.8.1](https://github.com/matzegebbe/dex-token-broker/compare/v0.8.0...v0.8.1) (2026-06-25)
 
 
