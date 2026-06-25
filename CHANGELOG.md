@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/matzegebbe/dex-token-broker/compare/v0.8.0...v0.8.1) (2026-06-25)
+
+
+### Bug Fixes
+
+* update Go toolchain for vuln fixes ([#35](https://github.com/matzegebbe/dex-token-broker/issues/35)) ([40e7199](https://github.com/matzegebbe/dex-token-broker/commit/40e719900fac8c3e318e743836418945c139d0cc))
+
 ## [0.8.0](https://github.com/matzegebbe/dex-token-broker/compare/v0.7.0...v0.8.0) (2026-05-13)
 
 
