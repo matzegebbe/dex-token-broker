@@ -400,6 +400,292 @@ func TestJWKSValidateAudience(t *testing.T) {
 	})
 }
 
+func TestJWKSValidatorSetAcceptsTokenFromAnySource(t *testing.T) {
+	t.Parallel()
+
+	keyA := generateRSAKey(t)
+	keyB := generateRSAKey(t)
+
+	serverA := newJWKSServer(t, &keyA.PublicKey, "kid-a")
+	defer serverA.Close()
+	serverB := newJWKSServer(t, &keyB.PublicKey, "kid-b")
+	defer serverB.Close()
+
+	set := &jwksValidatorSet{validators: []*jwksValidator{
+		newTestValidator(serverA.URL, "", ""),
+		newTestValidator(serverB.URL, "", ""),
+	}}
+
+	tokenA := signTestJWT(t, keyA, "kid-a", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	tokenB := signTestJWT(t, keyB, "kid-b", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	if err := set.ValidateToken(context.Background(), tokenA); err != nil {
+		t.Fatalf("expected token from source A to be accepted: %v", err)
+	}
+	if err := set.ValidateToken(context.Background(), tokenB); err != nil {
+		t.Fatalf("expected token from source B to be accepted: %v", err)
+	}
+}
+
+func TestJWKSValidatorSetRejectsUntrustedToken(t *testing.T) {
+	t.Parallel()
+
+	keyA := generateRSAKey(t)
+	untrusted := generateRSAKey(t)
+
+	serverA := newJWKSServer(t, &keyA.PublicKey, "kid-a")
+	defer serverA.Close()
+
+	set := &jwksValidatorSet{validators: []*jwksValidator{
+		newTestValidator(serverA.URL, "", ""),
+	}}
+
+	token := signTestJWT(t, untrusted, "kid-a", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	if err := set.ValidateToken(context.Background(), token); err == nil {
+		t.Fatal("expected token signed by an untrusted key to be rejected")
+	}
+}
+
+func TestJWKSValidateMultipleIssuers(t *testing.T) {
+	t.Parallel()
+
+	key := generateRSAKey(t)
+	jwksServer := newJWKSServer(t, &key.PublicKey, "kid-1")
+	defer jwksServer.Close()
+
+	validator := newTestValidator(jwksServer.URL, "https://a.example.com, https://b.example.com", "")
+
+	for _, iss := range []string{"https://a.example.com", "https://b.example.com"} {
+		token := signTestJWT(t, key, "kid-1", map[string]any{
+			"exp": time.Now().Add(time.Hour).Unix(),
+			"iss": iss,
+		})
+		if err := validator.ValidateToken(context.Background(), token); err != nil {
+			t.Fatalf("expected issuer %q to be accepted: %v", iss, err)
+		}
+	}
+
+	token := signTestJWT(t, key, "kid-1", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"iss": "https://evil.example.com",
+	})
+	if err := validator.ValidateToken(context.Background(), token); err == nil {
+		t.Fatal("expected unlisted issuer to be rejected")
+	}
+}
+
+func TestNewWithMultipleJWKSURLs(t *testing.T) {
+	t.Parallel()
+
+	keyA := generateRSAKey(t)
+	keyB := generateRSAKey(t)
+
+	serverA := newJWKSServer(t, &keyA.PublicKey, "kid-a")
+	defer serverA.Close()
+	serverB := newJWKSServer(t, &keyB.PublicKey, "kid-b")
+	defer serverB.Close()
+
+	service, err := New(Config{
+		DexTokenURL:         "http://dex.example/token",
+		AllowInsecureDexURL: true,
+		StaticClientID:      "static-client",
+		StaticClientSecret:  "static-secret",
+		JWKSURL:             serverA.URL,
+		JWKSURLs:            []string{serverB.URL},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("expected broker to initialize: %v", err)
+	}
+
+	if got := len(service.jwks.validators); got != 2 {
+		t.Fatalf("expected 2 validators, got %d", got)
+	}
+
+	service.httpClient = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			rec.Header().Set("Content-Type", "application/json")
+			rec.WriteHeader(http.StatusOK)
+			_, _ = rec.WriteString(`{"access_token":"dex-token","token_type":"Bearer","expires_in":3600}`)
+			return rec.Result(), nil
+		}),
+	}
+
+	for name, key := range map[string]*rsa.PrivateKey{"kid-a": keyA, "kid-b": keyB} {
+		jwt := signTestJWT(t, key, name, map[string]any{
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/check", nil)
+		req.Header.Set("Authorization", "Bearer "+jwt)
+		service.CheckHandler(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for token %s, got %d: %s", name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestNewWithJWKSProvidersEnforcesPerProviderAudience(t *testing.T) {
+	t.Parallel()
+
+	keyA := generateRSAKey(t)
+	keyB := generateRSAKey(t)
+
+	serverA := newJWKSServer(t, &keyA.PublicKey, "kid-a")
+	defer serverA.Close()
+	serverB := newJWKSServer(t, &keyB.PublicKey, "kid-b")
+	defer serverB.Close()
+
+	service, err := New(Config{
+		DexTokenURL:         "http://dex.example/token",
+		AllowInsecureDexURL: true,
+		StaticClientID:      "static-client",
+		StaticClientSecret:  "static-secret",
+		JWKSProviders: []JWKSProvider{
+			{URL: serverA.URL, Issuers: []string{"https://a.example.com"}, Audiences: []string{"api-a"}},
+			{URL: serverB.URL, Issuers: []string{"https://b.example.com"}, Audiences: []string{"api-b"}},
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("expected broker to initialize: %v", err)
+	}
+
+	service.httpClient = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			rec.Header().Set("Content-Type", "application/json")
+			rec.WriteHeader(http.StatusOK)
+			_, _ = rec.WriteString(`{"access_token":"dex-token","token_type":"Bearer","expires_in":3600}`)
+			return rec.Result(), nil
+		}),
+	}
+
+	check := func(jwt string) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/check", nil)
+		req.Header.Set("Authorization", "Bearer "+jwt)
+		service.CheckHandler(rec, req)
+		return rec.Code
+	}
+
+	// Correct issuer + audience for provider A.
+	validA := signTestJWT(t, keyA, "kid-a", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"iss": "https://a.example.com",
+		"aud": "api-a",
+	})
+	if code := check(validA); code != http.StatusOK {
+		t.Fatalf("expected provider A token to pass, got %d", code)
+	}
+
+	// Signed by provider A's key but carrying provider B's audience: must fail,
+	// because provider A only accepts api-a and provider B's key can't verify it.
+	crossAud := signTestJWT(t, keyA, "kid-a", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"iss": "https://a.example.com",
+		"aud": "api-b",
+	})
+	if code := check(crossAud); code != http.StatusUnauthorized {
+		t.Fatalf("expected cross-audience token to be rejected, got %d", code)
+	}
+
+	// Provider B token with its own audience passes.
+	validB := signTestJWT(t, keyB, "kid-b", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"iss": "https://b.example.com",
+		"aud": "api-b",
+	})
+	if code := check(validB); code != http.StatusOK {
+		t.Fatalf("expected provider B token to pass, got %d", code)
+	}
+}
+
+func TestBuildJWKSProviders(t *testing.T) {
+	t.Parallel()
+
+	t.Run("legacy URLs use global issuer and audience", func(t *testing.T) {
+		providers := buildJWKSProviders(Config{
+			JWKSURL:     "https://a.example/jwks",
+			JWKSURLs:    []string{"https://b.example/jwks"},
+			JWTIssuer:   "iss-1, iss-2",
+			JWTAudience: "aud-1",
+		})
+		if len(providers) != 2 {
+			t.Fatalf("expected 2 providers, got %d", len(providers))
+		}
+		for _, p := range providers {
+			if len(p.Issuers) != 2 || p.Issuers[0] != "iss-1" || p.Issuers[1] != "iss-2" {
+				t.Fatalf("expected global issuers on %s, got %v", p.URL, p.Issuers)
+			}
+			if len(p.Audiences) != 1 || p.Audiences[0] != "aud-1" {
+				t.Fatalf("expected global audience on %s, got %v", p.URL, p.Audiences)
+			}
+		}
+	})
+
+	t.Run("explicit providers win over legacy duplicates", func(t *testing.T) {
+		providers := buildJWKSProviders(Config{
+			JWKSProviders: []JWKSProvider{
+				{URL: "https://a.example/jwks", Audiences: []string{"specific-aud"}},
+			},
+			JWKSURL:     "https://a.example/jwks",
+			JWTAudience: "global-aud",
+		})
+		if len(providers) != 1 {
+			t.Fatalf("expected duplicate URL to collapse to 1 provider, got %d", len(providers))
+		}
+		if len(providers[0].Audiences) != 1 || providers[0].Audiences[0] != "specific-aud" {
+			t.Fatalf("expected explicit provider audience to win, got %v", providers[0].Audiences)
+		}
+	})
+}
+
+func TestNewDedupesJWKSURLs(t *testing.T) {
+	t.Parallel()
+
+	key := generateRSAKey(t)
+	server := newJWKSServer(t, &key.PublicKey, "kid-1")
+	defer server.Close()
+
+	service, err := New(Config{
+		DexTokenURL:         "http://dex.example/token",
+		AllowInsecureDexURL: true,
+		StaticClientID:      "static-client",
+		StaticClientSecret:  "static-secret",
+		JWKSURL:             server.URL,
+		JWKSURLs:            []string{server.URL, server.URL},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("expected broker to initialize: %v", err)
+	}
+
+	if got := len(service.jwks.validators); got != 1 {
+		t.Fatalf("expected duplicate URLs to collapse to 1 validator, got %d", got)
+	}
+}
+
+func TestNewRejectsInvalidJWKSURLInList(t *testing.T) {
+	t.Parallel()
+
+	_, err := New(Config{
+		DexTokenURL:         "http://dex.example/token",
+		AllowInsecureDexURL: false,
+		StaticClientID:      "client",
+		StaticClientSecret:  "secret",
+		JWKSURLs:            []string{"https://good.example/jwks.json", "http://insecure.example/jwks.json"},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil {
+		t.Fatal("expected an insecure URL in the list to be rejected")
+	}
+}
+
 func TestJWKSRejectSmallRSAKey(t *testing.T) {
 	t.Parallel()
 
@@ -784,7 +1070,7 @@ func TestTokenHeaderMappingCached(t *testing.T) {
 // Test helpers
 
 func newTestValidator(jwksURL, issuer, audience string) *jwksValidator {
-	return newJWKSValidator(jwksURL, issuer, audience, http.DefaultClient, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newJWKSValidator(jwksURL, splitList(issuer), splitList(audience), http.DefaultClient, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func generateRSAKey(t *testing.T) *rsa.PrivateKey {

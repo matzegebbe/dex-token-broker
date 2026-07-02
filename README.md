@@ -136,9 +136,11 @@ DexTokenBroker is configured with environment variables:
 | `STATIC_CLIENT_SECRET` | empty | Fixed OAuth client secret; overrides the incoming client-secret header |
 | `STATIC_SCOPE` | empty | Fixed OAuth scope; overrides the incoming scope header (e.g. `openid email profile groups`) |
 | `JWKS_URL` | empty | JWKS endpoint URL; when set, incoming requests must carry a valid JWT (see [JWT/JWKS validation](#jwtjwks-validation-gate)) |
+| `JWKS_URLS` | empty | Comma-separated list of additional JWKS endpoints to trust; combined with `JWKS_URL`. A JWT is accepted if it validates against any one of them (see [Trusting multiple identity providers](#trusting-multiple-identity-providers)) |
+| `JWKS_PROVIDERS` | empty | JSON array of `{url, issuer, audience}` objects to trust, each with its **own** issuer/audience allowlist (`issuer` and `audience` may be a string or an array). Combined with `JWKS_URL`/`JWKS_URLS`. Use this when each provider needs a different audience (see [Trusting multiple identity providers](#trusting-multiple-identity-providers)) |
 | `JWT_HEADER` | `Authorization` | Header to read the incoming JWT from |
-| `JWT_ISSUER` | empty | If set, reject JWTs whose `iss` claim does not match |
-| `JWT_AUDIENCE` | empty | If set, reject JWTs whose `aud` claim does not contain this value |
+| `JWT_ISSUER` | empty | Global issuer allowlist applied to `JWKS_URL`/`JWKS_URLS` endpoints. If set, reject JWTs whose `iss` claim does not match. Accepts a comma-separated list |
+| `JWT_AUDIENCE` | empty | Global audience allowlist applied to `JWKS_URL`/`JWKS_URLS` endpoints. If set, reject JWTs whose `aud` claim does not contain an expected value. Accepts a comma-separated list |
 
 ## API
 
@@ -182,8 +184,8 @@ This mode requires `STATIC_CLIENT_ID` to be set. `STATIC_CLIENT_SECRET` is optio
 - Algorithm must match the key's registered algorithm in JWKS
 - `exp` claim is required and must not be in the past
 - `nbf` claim, if present, must be in the past
-- `iss` claim, if `JWT_ISSUER` is configured, must match exactly
-- `aud` claim, if `JWT_AUDIENCE` is configured, must contain the expected value
+- `iss` claim, if an issuer allowlist is configured for the matching provider, must match one of its issuers
+- `aud` claim, if an audience allowlist is configured for the matching provider, must contain one of its audiences
 - Minimum RSA key size of 2048 bits
 - Maximum JWT size of 16 KB
 
@@ -202,6 +204,59 @@ STATIC_CLIENT_ID=dex-client
 STATIC_CLIENT_SECRET=dex-secret
 STATIC_SCOPE=openid email profile groups
 ```
+
+### Trusting multiple identity providers
+
+To accept JWTs from more than one issuer (for example two Auth0 tenants and
+Entra), list every JWKS endpoint. Each endpoint is treated as an independent
+trust domain, and a JWT is accepted as soon as it validates against any one of
+them. Because each provider signs with its own keys, a token issued by one
+provider can never be validated by another provider's keys.
+
+There are two ways to configure this, and they can be combined.
+
+#### Per-provider issuer and audience (recommended)
+
+Use `JWKS_PROVIDERS` when each provider needs its **own** issuer and audience —
+this is the correct choice for multi-tenant setups, since it prevents a token
+minted for one provider's audience from being accepted at another. `issuer` and
+`audience` may each be a string or an array of strings, and both are optional
+(omit to skip that check for the provider):
+
+```bash
+JWKS_PROVIDERS='[
+  {"url":"https://customer1.eu.auth0.com/.well-known/jwks.json",
+   "issuer":"https://customer1.eu.auth0.com/",
+   "audience":"api://customer1"},
+  {"url":"https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys",
+   "issuer":"https://login.microsoftonline.com/<tenant>/v2.0",
+   "audience":["api://entra","api://entra-legacy"]},
+  {"url":"https://customer2.us.auth0.com/.well-known/jwks.json",
+   "issuer":"https://customer2.us.auth0.com/",
+   "audience":"api://customer2"}
+]'
+STATIC_CLIENT_ID=dex-client
+STATIC_CLIENT_SECRET=dex-secret
+```
+
+#### Shared issuer/audience allowlist
+
+If every provider shares the same audience, the lighter `JWKS_URLS` form pairs
+with the global `JWT_ISSUER`/`JWT_AUDIENCE` allowlists (both accept
+comma-separated lists). `JWKS_URLS` is combined with `JWKS_URL`, so existing
+single-endpoint configurations keep working unchanged:
+
+```bash
+JWKS_URL=https://customer1.eu.auth0.com/.well-known/jwks.json
+JWKS_URLS=https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys,https://customer2.us.auth0.com/.well-known/jwks.json
+JWT_ISSUER=https://customer1.eu.auth0.com/,https://login.microsoftonline.com/<tenant>/v2.0,https://customer2.us.auth0.com/
+JWT_AUDIENCE=my-service
+STATIC_CLIENT_ID=dex-client
+STATIC_CLIENT_SECRET=dex-secret
+```
+
+Endpoints from `JWKS_PROVIDERS`, `JWKS_URL`, and `JWKS_URLS` are all merged
+(deduplicated by URL, with `JWKS_PROVIDERS` taking precedence).
 
 ## Token header mapping
 

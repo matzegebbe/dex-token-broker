@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -158,6 +160,11 @@ func loadConfig() (runtimeConfig, error) {
 	staticClientSecret := os.Getenv("STATIC_CLIENT_SECRET")
 	staticScope := os.Getenv("STATIC_SCOPE")
 	jwksURL := os.Getenv("JWKS_URL")
+	jwksURLs := splitAndTrim(os.Getenv("JWKS_URLS"))
+	jwksProviders, err := parseJWKSProviders(os.Getenv("JWKS_PROVIDERS"))
+	if err != nil {
+		return runtimeConfig{}, err
+	}
 	jwtHeader := getenv("JWT_HEADER", "Authorization")
 	jwtIssuer := os.Getenv("JWT_ISSUER")
 	jwtAudience := os.Getenv("JWT_AUDIENCE")
@@ -186,6 +193,8 @@ func loadConfig() (runtimeConfig, error) {
 			StaticClientSecret:   staticClientSecret,
 			StaticScope:          staticScope,
 			JWKSURL:              jwksURL,
+			JWKSURLs:             jwksURLs,
+			JWKSProviders:        jwksProviders,
 			JWTHeader:            jwtHeader,
 			JWTIssuer:            jwtIssuer,
 			JWTAudience:          jwtAudience,
@@ -257,4 +266,82 @@ func getenv(key, fallback string) string {
 	}
 
 	return value
+}
+
+// splitAndTrim parses a comma-separated environment value into a trimmed,
+// non-empty list. An empty value yields a nil slice.
+func splitAndTrim(value string) []string {
+	if value == "" {
+		return nil
+	}
+
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+
+	return out
+}
+
+// stringOrSlice accepts a JSON value that is either a single string or an array
+// of strings, normalizing both into a trimmed, non-empty slice.
+type stringOrSlice []string
+
+func (s *stringOrSlice) UnmarshalJSON(data []byte) error {
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		if single = strings.TrimSpace(single); single != "" {
+			*s = stringOrSlice{single}
+		}
+		return nil
+	}
+
+	var multi []string
+	if err := json.Unmarshal(data, &multi); err != nil {
+		return errors.New("expected a string or array of strings")
+	}
+
+	var out []string
+	for _, v := range multi {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	*s = out
+	return nil
+}
+
+// parseJWKSProviders decodes the JWKS_PROVIDERS JSON array into provider
+// definitions with per-provider issuer and audience allowlists.
+func parseJWKSProviders(raw string) ([]tokenbroker.JWKSProvider, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+
+	var entries []struct {
+		URL      string        `json:"url"`
+		Issuer   stringOrSlice `json:"issuer"`
+		Audience stringOrSlice `json:"audience"`
+	}
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, fmt.Errorf("parse JWKS_PROVIDERS: %w", err)
+	}
+
+	providers := make([]tokenbroker.JWKSProvider, 0, len(entries))
+	for i, e := range entries {
+		if strings.TrimSpace(e.URL) == "" {
+			return nil, fmt.Errorf("parse JWKS_PROVIDERS: entry %d is missing a url", i)
+		}
+		providers = append(providers, tokenbroker.JWKSProvider{
+			URL:       strings.TrimSpace(e.URL),
+			Issuers:   []string(e.Issuer),
+			Audiences: []string(e.Audience),
+		})
+	}
+
+	return providers, nil
 }
