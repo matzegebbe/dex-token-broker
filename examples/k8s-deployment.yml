@@ -8,6 +8,16 @@ stringData:
   STATIC_CLIENT_SECRET: ""
   STATIC_SCOPE: ""
   JWKS_URL: ""
+  # Comma-separated additional JWKS endpoints to trust (combined with JWKS_URL).
+  JWKS_URLS: ""
+  # JSON array of providers, each with its own issuer/audience. Use this when
+  # each provider needs a different audience. issuer/audience may be a string
+  # or an array, e.g.:
+  #   [{"url":"https://c1/jwks","issuer":"https://c1/","audience":"api-c1"},
+  #    {"url":"https://c2/jwks","issuer":"https://c2/","audience":["api-c2"]}]
+  JWKS_PROVIDERS: ""
+  # JWT_ISSUER / JWT_AUDIENCE are the global allowlists applied to JWKS_URL /
+  # JWKS_URLS endpoints; both accept comma-separated lists.
   JWT_ISSUER: ""
   JWT_AUDIENCE: ""
 ---
@@ -86,6 +96,18 @@ spec:
                 secretKeyRef:
                   name: dex-token-broker
                   key: JWKS_URL
+                  optional: true
+            - name: JWKS_URLS
+              valueFrom:
+                secretKeyRef:
+                  name: dex-token-broker
+                  key: JWKS_URLS
+                  optional: true
+            - name: JWKS_PROVIDERS
+              valueFrom:
+                secretKeyRef:
+                  name: dex-token-broker
+                  key: JWKS_PROVIDERS
                   optional: true
             - name: JWT_HEADER
               value: "Authorization"

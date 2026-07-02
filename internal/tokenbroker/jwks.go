@@ -83,26 +83,51 @@ func (a *jwtAudience) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// jwksValidatorSet validates a token against multiple JWKS sources, treating
+// each source as an independent trust domain. A token is accepted as soon as
+// any one validator accepts it, which lets the broker trust more than one
+// identity provider (e.g. several Auth0 tenants and Entra).
+type jwksValidatorSet struct {
+	validators []*jwksValidator
+}
+
+func (s *jwksValidatorSet) ValidateToken(ctx context.Context, rawToken string) error {
+	if len(s.validators) == 0 {
+		return errors.New("no JWKS validators configured")
+	}
+
+	var lastErr error
+	for _, v := range s.validators {
+		if err := v.ValidateToken(ctx, rawToken); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+
+	return lastErr
+}
+
 type jwksValidator struct {
 	mu        sync.RWMutex
 	keys      map[string]parsedKey
 	jwksURL   string
-	issuer    string
-	audience  string
+	issuers   []string
+	audiences []string
 	client    *http.Client
 	logger    *slog.Logger
 	lastFetch time.Time
 	refreshMu sync.Mutex
 }
 
-func newJWKSValidator(jwksURL, issuer, audience string, client *http.Client, logger *slog.Logger) *jwksValidator {
+func newJWKSValidator(jwksURL string, issuers, audiences []string, client *http.Client, logger *slog.Logger) *jwksValidator {
 	return &jwksValidator{
-		keys:     make(map[string]parsedKey),
-		jwksURL:  jwksURL,
-		issuer:   issuer,
-		audience: audience,
-		client:   client,
-		logger:   logger,
+		keys:      make(map[string]parsedKey),
+		jwksURL:   jwksURL,
+		issuers:   issuers,
+		audiences: audiences,
+		client:    client,
+		logger:    logger,
 	}
 }
 
@@ -179,24 +204,33 @@ func (v *jwksValidator) ValidateToken(ctx context.Context, rawToken string) erro
 		}
 	}
 
-	if v.issuer != "" && claims.Iss != v.issuer {
-		return fmt.Errorf("JWT issuer %q does not match expected %q", claims.Iss, v.issuer)
+	if len(v.issuers) > 0 && !containsString(v.issuers, claims.Iss) {
+		return fmt.Errorf("JWT issuer %q does not match any expected issuer", claims.Iss)
 	}
 
-	if v.audience != "" {
+	if len(v.audiences) > 0 {
 		found := false
 		for _, aud := range claims.Aud {
-			if aud == v.audience {
+			if containsString(v.audiences, aud) {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return errors.New("JWT audience does not contain expected value")
+			return errors.New("JWT audience does not contain an expected value")
 		}
 	}
 
 	return nil
+}
+
+func containsString(list []string, value string) bool {
+	for _, item := range list {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (v *jwksValidator) getKey(ctx context.Context, kid string) (parsedKey, error) {

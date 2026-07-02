@@ -32,10 +32,21 @@ type Config struct {
 	StaticClientSecret   string
 	StaticScope          string
 	JWKSURL              string
+	JWKSURLs             []string
+	JWKSProviders        []JWKSProvider
 	JWTHeader            string
 	JWTIssuer            string
 	JWTAudience          string
 	UpstreamTokenHeaders string
+}
+
+// JWKSProvider describes a single JWKS endpoint together with the issuer(s) and
+// audience(s) that tokens signed by its keys must satisfy. Empty Issuers or
+// Audiences disable that check for the provider.
+type JWKSProvider struct {
+	URL       string
+	Issuers   []string
+	Audiences []string
 }
 
 type tokenHeaderMapping struct {
@@ -56,7 +67,7 @@ type Service struct {
 	staticClientID       string
 	staticClientSecret   string
 	staticScope          string
-	jwks                 *jwksValidator
+	jwks                 *jwksValidatorSet
 	jwtHeader            string
 	tokenHeaderMappings  []tokenHeaderMapping
 	cacheCleanupInterval time.Duration
@@ -150,25 +161,11 @@ func New(cfg Config, logger *slog.Logger) (*Service, error) {
 		},
 	}
 
-	var jwksVal *jwksValidator
+	var jwksVal *jwksValidatorSet
 	var jwtHeaderName string
-	if cfg.JWKSURL != "" {
+	if providers := buildJWKSProviders(cfg); len(providers) > 0 {
 		if cfg.StaticClientID == "" {
 			return nil, errors.New("STATIC_CLIENT_ID must be set when JWKS_URL is configured")
-		}
-
-		parsed, err := url.Parse(cfg.JWKSURL)
-		if err != nil {
-			return nil, fmt.Errorf("invalid JWKS URL: %w", err)
-		}
-		if parsed.Scheme != "https" && parsed.Scheme != "http" {
-			return nil, fmt.Errorf("JWKS URL scheme must be http or https: %q", parsed.Scheme)
-		}
-		if parsed.Scheme != "https" && !cfg.AllowInsecureDexURL {
-			return nil, errors.New("JWKS URL must use https unless ALLOW_INSECURE_DEX_URL=true")
-		}
-		if parsed.Host == "" {
-			return nil, errors.New("JWKS URL host must not be empty")
 		}
 
 		jwtHeaderName, err = normalizeHeaderName(cfg.JWTHeader, "Authorization")
@@ -176,7 +173,16 @@ func New(cfg Config, logger *slog.Logger) (*Service, error) {
 			return nil, fmt.Errorf("invalid JWT header: %w", err)
 		}
 
-		jwksVal = newJWKSValidator(parsed.String(), cfg.JWTIssuer, cfg.JWTAudience, httpClient, logger)
+		validators := make([]*jwksValidator, 0, len(providers))
+		for _, p := range providers {
+			normalized, err := validateJWKSURL(p.URL, cfg.AllowInsecureDexURL)
+			if err != nil {
+				return nil, err
+			}
+			validators = append(validators, newJWKSValidator(normalized, p.Issuers, p.Audiences, httpClient, logger))
+		}
+
+		jwksVal = &jwksValidatorSet{validators: validators}
 	}
 
 	var tokenHeaderMappings []tokenHeaderMapping
@@ -473,6 +479,101 @@ func validateDexTokenURL(rawURL string, allowInsecure bool) (string, error) {
 	}
 
 	return parsed.String(), nil
+}
+
+func validateJWKSURL(rawURL string, allowInsecure bool) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid JWKS URL: %w", err)
+	}
+
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return "", fmt.Errorf("JWKS URL scheme must be http or https: %q", parsed.Scheme)
+	}
+
+	if parsed.Scheme != "https" && !allowInsecure {
+		return "", errors.New("JWKS URL must use https unless ALLOW_INSECURE_DEX_URL=true")
+	}
+
+	if parsed.Host == "" {
+		return "", errors.New("JWKS URL host must not be empty")
+	}
+
+	return parsed.String(), nil
+}
+
+// buildJWKSProviders assembles the effective list of JWKS providers. Entries
+// from JWKSProviders (per-provider issuer/audience) take precedence; the legacy
+// JWKSURL/JWKSURLs are then appended using the global JWTIssuer/JWTAudience
+// allowlists. Providers are deduplicated by URL, preserving order.
+func buildJWKSProviders(cfg Config) []JWKSProvider {
+	var providers []JWKSProvider
+	seen := make(map[string]bool)
+
+	for _, p := range cfg.JWKSProviders {
+		url := strings.TrimSpace(p.URL)
+		if url == "" || seen[url] {
+			continue
+		}
+		seen[url] = true
+		providers = append(providers, JWKSProvider{
+			URL:       url,
+			Issuers:   p.Issuers,
+			Audiences: p.Audiences,
+		})
+	}
+
+	legacyIssuers := splitList(cfg.JWTIssuer)
+	legacyAudiences := splitList(cfg.JWTAudience)
+	for _, url := range collectJWKSURLs(cfg.JWKSURL, cfg.JWKSURLs) {
+		if seen[url] {
+			continue
+		}
+		seen[url] = true
+		providers = append(providers, JWKSProvider{
+			URL:       url,
+			Issuers:   legacyIssuers,
+			Audiences: legacyAudiences,
+		})
+	}
+
+	return providers
+}
+
+// collectJWKSURLs merges the legacy single JWKS_URL with the JWKS_URLS list,
+// trimming blanks and removing duplicates while preserving order.
+func collectJWKSURLs(single string, multiple []string) []string {
+	var urls []string
+	seen := make(map[string]bool)
+
+	add := func(u string) {
+		u = strings.TrimSpace(u)
+		if u == "" || seen[u] {
+			return
+		}
+		seen[u] = true
+		urls = append(urls, u)
+	}
+
+	add(single)
+	for _, u := range multiple {
+		add(u)
+	}
+
+	return urls
+}
+
+// splitList parses a comma-separated configuration value into a trimmed,
+// non-empty list. An empty input yields a nil slice.
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func validateStaticCredentials(clientID, clientSecret, scope, clientIDHeader, clientSecretHeader, scopeHeader string) error {
