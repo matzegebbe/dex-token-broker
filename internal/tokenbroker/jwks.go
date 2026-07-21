@@ -347,6 +347,9 @@ func (v *jwksValidator) refresh(ctx context.Context) error {
 
 		keys[jwk.Kid] = parsedKey{publicKey: pub, alg: jwk.Alg}
 	}
+	if len(keys) == 0 {
+		return errors.New("JWKS contains no usable signing keys")
+	}
 
 	v.mu.Lock()
 	v.keys = keys
@@ -416,14 +419,24 @@ func parseECJWK(key jwkKey) (*ecdsa.PublicKey, error) {
 		return nil, fmt.Errorf("decode EC y: %w", err)
 	}
 
-	x := new(big.Int).SetBytes(xb)
-	y := new(big.Int).SetBytes(yb)
-
-	if !curve.IsOnCurve(x, y) {
-		return nil, errors.New("EC point is not on curve")
+	coordinateSize := (curve.Params().BitSize + 7) / 8
+	if len(xb) != coordinateSize || len(yb) != coordinateSize {
+		return nil, fmt.Errorf(
+			"invalid EC coordinate length: got x=%d and y=%d, want %d",
+			len(xb), len(yb), coordinateSize,
+		)
 	}
 
-	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
+	encoded := make([]byte, 1+2*coordinateSize)
+	encoded[0] = 4 // SEC 1 uncompressed point encoding.
+	copy(encoded[1:1+coordinateSize], xb)
+	copy(encoded[1+coordinateSize:], yb)
+
+	publicKey, err := ecdsa.ParseUncompressedPublicKey(curve, encoded)
+	if err != nil {
+		return nil, fmt.Errorf("parse EC public key: %w", err)
+	}
+	return publicKey, nil
 }
 
 func verifySignature(alg string, key crypto.PublicKey, signingInput, signature []byte) error {
@@ -449,6 +462,9 @@ func verifySignature(alg string, key crypto.PublicKey, signingInput, signature [
 		if !ok {
 			return errors.New("expected EC public key for ES* algorithm")
 		}
+		if err := validateECDSACurve(alg, ecKey.Curve); err != nil {
+			return err
+		}
 
 		keySize := (ecKey.Params().BitSize + 7) / 8
 		if len(signature) != 2*keySize {
@@ -466,6 +482,25 @@ func verifySignature(alg string, key crypto.PublicKey, signingInput, signature [
 	default:
 		return fmt.Errorf("unsupported algorithm %q", alg)
 	}
+}
+
+func validateECDSACurve(alg string, curve elliptic.Curve) error {
+	var expected elliptic.Curve
+	switch alg {
+	case "ES256":
+		expected = elliptic.P256()
+	case "ES384":
+		expected = elliptic.P384()
+	case "ES512":
+		expected = elliptic.P521()
+	default:
+		return fmt.Errorf("unsupported ECDSA algorithm %q", alg)
+	}
+
+	if curve != expected {
+		return fmt.Errorf("ECDSA curve %q is not valid for %s", curve.Params().Name, alg)
+	}
+	return nil
 }
 
 func cryptoHashForAlg(alg string) (crypto.Hash, error) {

@@ -17,9 +17,9 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
           cache: false
 
       - name: Check formatting
@@ -28,13 +28,49 @@ jobs:
       - name: Run tests
         run: go test ./...
 
+      - name: Run race detector
+        run: go test -race ./...
+
+      - name: Run go vet
+        run: go vet ./...
+
       - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
       - name: Build binary
-        run: go build ./cmd/dextokenbroker
+        run: go build -o ./bin/dextokenbroker ./cmd/dextokenbroker
+
+      - name: Smoke test application startup
+        run: |
+          set -euo pipefail
+
+          LISTEN_ADDR=127.0.0.1:18080 LOG_LEVEL=error ./bin/dextokenbroker >startup.log 2>&1 &
+          broker_pid=$!
+          trap 'kill "$broker_pid" 2>/dev/null || true' EXIT
+
+          for _ in {1..50}; do
+            if curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null; then
+              kill -TERM "$broker_pid"
+              wait "$broker_pid"
+              trap - EXIT
+              exit 0
+            fi
+
+            if ! kill -0 "$broker_pid" 2>/dev/null; then
+              cat startup.log
+              wait "$broker_pid" || true
+              echo "application exited before becoming healthy" >&2
+              exit 1
+            fi
+
+            sleep 0.1
+          done
+
+          cat startup.log
+          echo "application did not become healthy within 5 seconds" >&2
+          exit 1
 
       - name: Build container
         run: docker build .

@@ -22,6 +22,33 @@ func TestBuildCacheKeyUsesSecretFingerprint(t *testing.T) {
 	}
 }
 
+func TestBuildCacheKeySeparatesDelimitedValues(t *testing.T) {
+	t.Parallel()
+
+	keyA := buildCacheKey("service|admin", "shared-secret", "read")
+	keyB := buildCacheKey("service", "shared-secret", "admin|read")
+
+	if keyA == keyB {
+		t.Fatal("expected unambiguous cache keys for values containing delimiters")
+	}
+}
+
+func TestExtractTokenHeadersPreservesLargeNumbers(t *testing.T) {
+	t.Parallel()
+
+	service := &Service{
+		tokenHeaderMappings: []tokenHeaderMapping{{
+			jsonField:  "account_id",
+			headerName: "X-Account-ID",
+		}},
+	}
+	headers := service.extractTokenHeaders([]byte(`{"account_id":9007199254740993}`))
+
+	if got := headers["X-Account-ID"]; got != "9007199254740993" {
+		t.Fatalf("expected exact account ID, got %q", got)
+	}
+}
+
 func TestCheckHandlerCachesTokenPerCredentialSet(t *testing.T) {
 	t.Parallel()
 
@@ -208,6 +235,40 @@ func TestCheckHandlerRejectsOversizedClientID(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", recorder.Code)
+	}
+}
+
+func TestCheckHandlerRejectsColonInClientID(t *testing.T) {
+	t.Parallel()
+
+	service, err := New(Config{
+		DexTokenURL: "https://dex.example/token",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("expected broker to initialize: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/check", nil)
+	req.Header.Set("x-client-id", "service:other")
+	req.Header.Set("x-client-secret", "secret-one")
+
+	service.CheckHandler(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", recorder.Code)
+	}
+}
+
+func TestNewRejectsColonInStaticClientID(t *testing.T) {
+	t.Parallel()
+
+	_, err := New(Config{
+		DexTokenURL:    "https://dex.example/token",
+		StaticClientID: "service:other",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil {
+		t.Fatal("expected static client ID containing a colon to be rejected")
 	}
 }
 

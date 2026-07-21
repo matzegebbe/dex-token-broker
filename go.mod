@@ -1,5 +1,3 @@
 module github.com/matzegebbe/DexTokenBroker
 
-go 1.26.0
-
-toolchain go1.26.4
+go 1.26.5

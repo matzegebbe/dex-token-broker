@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -75,18 +76,24 @@ func run() error {
 		MaxHeaderBytes:    8 * 1024,
 		ErrorLog:          log.New(slog.NewLogLogger(logger.Handler(), slog.LevelError).Writer(), "", 0),
 	}
+	listener, err := net.Listen("tcp", cfg.ListenAddress)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cfg.ListenAddress, err)
+	}
+	defer listener.Close()
 
 	errCh := make(chan error, 1)
 
 	go func() {
-		logger.Info(
-			"starting DexTokenBroker",
-			"listen_addr", cfg.ListenAddress,
-			"dex_token_url", cfg.Broker.DexTokenURL,
-			"version", version,
-		)
-		errCh <- server.ListenAndServe()
+		errCh <- server.Serve(listener)
 	}()
+
+	logger.Info(
+		"started DexTokenBroker",
+		"listen_addr", listener.Addr().String(),
+		"dex_token_url", cfg.Broker.DexTokenURL,
+		"version", version,
+	)
 
 	select {
 	case err := <-errCh:
