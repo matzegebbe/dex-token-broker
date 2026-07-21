@@ -288,13 +288,7 @@ func (v *jwksValidator) refreshIfNeeded(ctx context.Context) error {
 		return nil
 	}
 
-	err := v.refresh(ctx)
-	if err != nil {
-		v.mu.Lock()
-		v.lastFetch = time.Now()
-		v.mu.Unlock()
-	}
-	return err
+	return v.refresh(ctx)
 }
 
 func (v *jwksValidator) refresh(ctx context.Context) error {

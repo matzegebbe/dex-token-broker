@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
@@ -34,6 +35,37 @@ func TestJWKSValidateValidToken(t *testing.T) {
 
 	if err := validator.ValidateToken(context.Background(), token); err != nil {
 		t.Fatalf("expected valid token: %v", err)
+	}
+}
+
+func TestJWKSNetworkErrorIsNotCached(t *testing.T) {
+	t.Parallel()
+
+	key := generateRSAKey(t)
+	jwksServer := newJWKSServer(t, &key.PublicKey, "kid-1")
+	defer jwksServer.Close()
+
+	requests := 0
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			return nil, errors.New("network unavailable")
+		}
+		return http.DefaultTransport.RoundTrip(req)
+	})}
+	validator := newJWKSValidator(jwksServer.URL, nil, nil, client, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	token := signTestJWT(t, key, "kid-1", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	if err := validator.ValidateToken(context.Background(), token); err == nil {
+		t.Fatal("expected first validation to fail with a network error")
+	}
+	if err := validator.ValidateToken(context.Background(), token); err != nil {
+		t.Fatalf("expected immediate retry after network error to succeed: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected two JWKS requests, got %d", requests)
 	}
 }
 
