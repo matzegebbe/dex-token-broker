@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/matzegebbe/dex-token-broker/compare/v0.9.0...v0.9.1) (2026-07-21)
+
+
+### Bug Fixes
+
+* **jwks:** retry after network errors ([#44](https://github.com/matzegebbe/dex-token-broker/issues/44)) ([490b410](https://github.com/matzegebbe/dex-token-broker/commit/490b41047154540c3f5d78984b193d122b191938))
+
 ## [0.9.0](https://github.com/matzegebbe/dex-token-broker/compare/v0.8.2...v0.9.0) (2026-07-02)
 
 
