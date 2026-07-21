@@ -1,8 +1,10 @@
 package tokenbroker
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -584,6 +586,9 @@ func validateStaticCredentials(clientID, clientSecret, scope, clientIDHeader, cl
 		if hasInvalidHeaderValue(clientID) {
 			return fmt.Errorf("%s contains invalid characters", clientIDHeader)
 		}
+		if strings.Contains(clientID, ":") {
+			return fmt.Errorf("%s must not contain a colon", clientIDHeader)
+		}
 	}
 	if clientSecret != "" {
 		if len(clientSecret) > maxClientSecretLength {
@@ -616,6 +621,13 @@ func validateInboundHeaders(clientID, clientSecret, scope, clientIDHeader, clien
 		return &tokenRequestError{
 			StatusCode: http.StatusBadRequest,
 			Message:    clientIDHeader + " too long",
+		}
+	}
+
+	if strings.Contains(clientID, ":") {
+		return &tokenRequestError{
+			StatusCode: http.StatusBadRequest,
+			Message:    clientIDHeader + " must not contain a colon",
 		}
 	}
 
@@ -677,7 +689,9 @@ func (s *Service) extractTokenHeaders(body []byte) map[string]string {
 	}
 
 	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&raw); err != nil {
 		return nil
 	}
 
@@ -705,6 +719,8 @@ func formatJSONValue(v any) string {
 			return fmt.Sprintf("%d", int64(val))
 		}
 		return fmt.Sprintf("%g", val)
+	case json.Number:
+		return val.String()
 	default:
 		return ""
 	}
@@ -746,12 +762,14 @@ func parseTokenHeaderMappings(raw string) ([]tokenHeaderMapping, error) {
 }
 
 func buildCacheKey(clientID, clientSecret, scope string) string {
-	sum := sha256.Sum256([]byte(clientSecret))
-	return strings.Join([]string{
-		clientID,
-		scope,
-		hex.EncodeToString(sum[:]),
-	}, "|")
+	hash := sha256.New()
+	var length [8]byte
+	for _, value := range []string{clientID, clientSecret, scope} {
+		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+		_, _ = hash.Write(length[:])
+		_, _ = hash.Write([]byte(value))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func mapUpstreamStatus(statusCode int) int {

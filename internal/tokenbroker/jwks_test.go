@@ -3,11 +3,14 @@ package tokenbroker
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
@@ -34,6 +37,128 @@ func TestJWKSValidateValidToken(t *testing.T) {
 
 	if err := validator.ValidateToken(context.Background(), token); err != nil {
 		t.Fatalf("expected valid token: %v", err)
+	}
+}
+
+func TestJWKSNetworkErrorIsNotCached(t *testing.T) {
+	t.Parallel()
+
+	key := generateRSAKey(t)
+	jwksServer := newJWKSServer(t, &key.PublicKey, "kid-1")
+	defer jwksServer.Close()
+
+	requests := 0
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			return nil, errors.New("network unavailable")
+		}
+		return http.DefaultTransport.RoundTrip(req)
+	})}
+	validator := newJWKSValidator(jwksServer.URL, nil, nil, client, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	token := signTestJWT(t, key, "kid-1", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	if err := validator.ValidateToken(context.Background(), token); err == nil {
+		t.Fatal("expected first validation to fail with a network error")
+	}
+	if err := validator.ValidateToken(context.Background(), token); err != nil {
+		t.Fatalf("expected immediate retry after network error to succeed: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected two JWKS requests, got %d", requests)
+	}
+}
+
+func TestJWKSEmptyResponseDoesNotReplaceCachedKeys(t *testing.T) {
+	t.Parallel()
+
+	key := generateRSAKey(t)
+	set := jwksSet{Keys: []jwkKey{rsaJWK(&key.PublicKey, "kid-1")}}
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(set)
+	}))
+	defer jwksServer.Close()
+
+	validator := newTestValidator(jwksServer.URL, "", "")
+	token := signTestJWT(t, key, "kid-1", map[string]any{
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	if err := validator.ValidateToken(context.Background(), token); err != nil {
+		t.Fatalf("populate JWKS cache: %v", err)
+	}
+
+	set = jwksSet{}
+	if err := validator.refresh(context.Background()); err == nil {
+		t.Fatal("expected empty JWKS response to be rejected")
+	}
+	if err := validator.ValidateToken(context.Background(), token); err != nil {
+		t.Fatalf("expected cached key to survive empty JWKS response: %v", err)
+	}
+}
+
+func TestVerifySignatureRejectsECDSACurveMismatch(t *testing.T) {
+	t.Parallel()
+
+	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ECDSA key: %v", err)
+	}
+
+	input := []byte("header.payload")
+	digest := sha256.Sum256(input)
+	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatalf("sign input: %v", err)
+	}
+	keySize := (key.Curve.Params().BitSize + 7) / 8
+	signature := make([]byte, 2*keySize)
+	r.FillBytes(signature[:keySize])
+	s.FillBytes(signature[keySize:])
+
+	if err := verifySignature("ES256", &key.PublicKey, input, signature); err == nil {
+		t.Fatal("expected ES256 signature using P-384 to be rejected")
+	}
+}
+
+func TestParseECJWK(t *testing.T) {
+	t.Parallel()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ECDSA key: %v", err)
+	}
+	coordinateSize := (key.Curve.Params().BitSize + 7) / 8
+	jwk := jwkKey{
+		Kty: "EC",
+		Crv: "P-256",
+		X:   base64.RawURLEncoding.EncodeToString(key.X.FillBytes(make([]byte, coordinateSize))),
+		Y:   base64.RawURLEncoding.EncodeToString(key.Y.FillBytes(make([]byte, coordinateSize))),
+	}
+
+	parsed, err := parseECJWK(jwk)
+	if err != nil {
+		t.Fatalf("parse valid EC JWK: %v", err)
+	}
+	if !parsed.Equal(&key.PublicKey) {
+		t.Fatal("parsed EC key does not match original key")
+	}
+}
+
+func TestParseECJWKRejectsInvalidCoordinateLength(t *testing.T) {
+	t.Parallel()
+
+	jwk := jwkKey{
+		Kty: "EC",
+		Crv: "P-256",
+		X:   base64.RawURLEncoding.EncodeToString(make([]byte, 31)),
+		Y:   base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
+	}
+
+	if _, err := parseECJWK(jwk); err == nil {
+		t.Fatal("expected invalid EC coordinate length to be rejected")
 	}
 }
 
@@ -228,8 +353,8 @@ func TestJWKSRejectDuplicateKid(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected duplicate kid to be rejected")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("expected missing key error, got: %v", err)
+	if !strings.Contains(err.Error(), "no usable signing keys") {
+		t.Fatalf("expected unusable JWKS error, got: %v", err)
 	}
 }
 
@@ -260,8 +385,8 @@ func TestJWKSRejectMultipleUnkeyedKeysForTokenWithoutKid(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected multiple unkeyed keys to be rejected")
 	}
-	if !strings.Contains(err.Error(), "no kid") {
-		t.Fatalf("expected no kid error, got: %v", err)
+	if !strings.Contains(err.Error(), "no usable signing keys") {
+		t.Fatalf("expected unusable JWKS error, got: %v", err)
 	}
 }
 
