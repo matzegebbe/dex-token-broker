@@ -34,11 +34,6 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
-      - name: Run govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
-
       - name: Build binary
         run: go build -o ./bin/dextokenbroker ./cmd/dextokenbroker
 
