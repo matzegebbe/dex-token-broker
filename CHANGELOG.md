@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/matzegebbe/dex-token-broker/compare/v0.9.1...v0.9.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* repair release pipeline and harden CI security ([#60](https://github.com/matzegebbe/dex-token-broker/issues/60)) ([d3f5143](https://github.com/matzegebbe/dex-token-broker/commit/d3f51436d2c0dc7e16e6052b7f6508662b5bc355))
+
 ## [0.9.1](https://github.com/matzegebbe/dex-token-broker/compare/v0.9.0...v0.9.1) (2026-07-21)
 
 
