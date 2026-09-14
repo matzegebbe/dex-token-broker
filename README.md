@@ -191,7 +191,7 @@ This mode requires `STATIC_CLIENT_ID` to be set. `STATIC_CLIENT_SECRET` is optio
 
 **JWKS key caching:**
 
-Keys are fetched lazily on the first request and cached in memory. If a JWT presents an unknown `kid`, the broker refreshes the JWKS endpoint (rate-limited to once per 5 minutes to prevent abuse).
+Keys are fetched lazily on the first request and cached in memory. If a JWT presents an unknown `kid`, the broker refreshes the JWKS endpoint (rate-limited to once per 5 minutes after a successful refresh). Failed fetches are retried immediately on the next request to preserve recovery behavior; apply ingress rate limits to bound retry traffic during outages. Known keys remain cached until a successful refresh or process restart; deployments requiring immediate key revocation should account for this limitation.
 
 **Example configuration:**
 
@@ -508,7 +508,7 @@ The broker also deduplicates concurrent cache misses per cache key, which helps 
 - When `JWKS_URL` is set, configure `JWT_ISSUER` and `JWT_AUDIENCE` to prevent token reuse across services.
 - JWT validation enforces an explicit algorithm allowlist (RS256/384/512, ES256/384/512), rejects `alg=none` and symmetric algorithms, requires the `exp` claim, enforces minimum RSA key sizes (2048 bits), and rate-limits JWKS refresh to prevent endpoint abuse.
 - The in-memory cache is pod-local by design. That keeps the service simple, but each replica has its own cache.
-- The published container image is non-root, distroless, emits SBOM/provenance on release, and is scanned in CI.
+- The published container image is non-root, distroless, emits SBOM/provenance on release, and its source/configuration is scanned in CI.
 
 ## CI, releases, and automation
 
@@ -516,13 +516,18 @@ This repository is set up for GitHub from day one.
 
 ### CI
 
-`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. It:
+PRs and pushes to `main` call the shared `verify.yml` workflow. Release jobs use
+that same workflow at the resolved tag commit before publishing. Checks are
+blocking: formatting, `go mod tidy` consistency, Staticcheck, `go vet`, normal
+and race tests, `govulncheck`, source/configuration/secret scanning with Trivy,
+binary startup and graceful shutdown, Docker build and image vulnerability scan,
+and GoReleaser validation.
+The weekly security run repeats verification against newly disclosed findings.
+Go comes from `go.mod`; keep the Docker builder on the same patched version.
+There are no third-party runtime modules, so no `go.sum` is currently needed.
 
-- checks `gofmt`
-- runs `go test ./...`
-- runs `govulncheck ./...`
-- builds the binary
-- builds the Docker image
+Run `make verify` locally with the Go version in `go.mod`. CI additionally runs
+Trivy, Docker, and `goreleaser check` (GoReleaser v2.18.1).
 
 ### Conventional Commits
 
@@ -545,43 +550,85 @@ Releases follow SemVer:
 - `feat:` -> minor release
 - `feat!:` or `BREAKING CHANGE:` -> major release
 
-### Release Please
+### Creating releases
 
-`.github/workflows/release-please.yml` and the two `.release-please-*` files manage releases.
+Release Please manages version PRs, `.release-please-manifest.json`, and
+`CHANGELOG.md`. Merge Conventional Commits into `main`, review its release PR,
+then merge the PR. Dependency/toolchain version bumps do not themselves mean
+that the application needs a new version; `chore:` commits do not normally
+trigger a release. Use `fix:` or `feat:` for corresponding application changes.
 
-If you want the release tag and GitHub release created by Release Please to trigger downstream workflows such as the container publish job, create a repository secret named `RELEASE_PLEASE_PAT`. The workflow uses that secret when present and falls back to `GITHUB_TOKEN` otherwise.
+Release Please creates a **draft** and a tag using `GITHUB_TOKEN`, then explicitly
+calls `release.yml`. This avoids relying on a tag event that GitHub suppresses
+for its own token. The tag is created immediately even for a draft. Verification
+runs before GoReleaser uploads assets; the release becomes public only after
+binaries, attestations, and the container have completed.
 
-Flow:
+Alternatively, push an existing `main` commit with a stable tag such as `v1.2.3`:
 
-1. Merge conventional commits into `main`.
-2. Release Please opens or updates a release PR.
-3. Merge that PR.
-4. Release Please creates the Git tag and GitHub release.
-5. The container workflow publishes the matching Docker image to GHCR.
+```sh
+git tag v1.2.3 <commit-on-main>
+git push origin v1.2.3
+```
 
-### Container publishing
+Only `vX.Y.Z` without leading zeroes is accepted; prerelease tags are not currently
+supported. Manual tags should agree with the version manifest/changelog to keep
+subsequent Release Please version calculations consistent. Do not move published
+tags. To retry a failed draft, rerun its failed workflow or dispatch `release.yml`
+with the same tag. Runs serialize by tag and already published releases are
+skipped. GoReleaser reuses the draft and preserves Release Please's notes; manual
+tags receive generated notes. A partial failure may leave draft assets or a
+container in GHCR; inspect those before retrying. Publishing to GitHub and GHCR
+cannot be a single atomic transaction.
 
-`.github/workflows/container.yml` publishes multi-architecture images for:
+### Artifacts and reproducibility
 
-- `linux/amd64`
-- `linux/arm64`
+- Binaries for Linux, macOS, and Windows on amd64 and arm64; Windows uses ZIP,
+  other platforms use tar.gz. Archives include the license and documentation.
+- SHA-256 `checksums.txt` and GitHub build provenance attestations for archives.
+- Multi-platform `ghcr.io/<owner>/dextokenbroker` images for linux/amd64 and
+  linux/arm64, including BuildKit SBOM and provenance. Existing `vX.Y.Z`, `vX.Y`,
+  `sha-*`, and `latest` image tags are retained.
 
-It also publishes SBOM and provenance attestations with the release image.
+GoReleaser uses a fixed Go version, CGO disabled, trimmed paths, an empty build ID,
+and commit-based timestamps. `--version` reports version, commit, and build date
+using the application's existing ldflags. To test packaging without publishing:
 
-### Dependabot
+```sh
+goreleaser check
+goreleaser release --snapshot --clean
+(cd dist && sha256sum -c checksums.txt)
+```
 
-`.github/dependabot.yml` keeps these dependencies current:
+For provenance, use `gh attestation verify <archive> --repo <owner>/<repository>`.
+Binary SBOMs are not generated; SBOM coverage currently applies to container
+images. Docker base tags remain Dependabot-managed and may change, so rebuilding
+an old image is not guaranteed byte-identical. Publish releases in version order:
+retrying an older unpublished tag can move the mutable `latest` image tag.
 
-- Go modules
-- GitHub Actions
-- Docker base images
+### GitHub repository settings
 
-### Security workflow
+- Enable Actions and allow GitHub Actions to create pull requests. Protect `main`
+  with the `verify / test` CI check, review requirements, and no force pushes.
+- Protect `v*` tags from modification/deletion; allow the release automation to
+  create them. Release jobs require repository contents and GHCR package writes.
+- The built-in `GITHUB_TOKEN` publishes releases and images. No cloud credentials
+  or publishing PAT is needed. OIDC is used for archive provenance attestations.
+- Optional `RELEASE_PLEASE_PAT`: a fine-grained token limited to this repository
+  with contents and pull-request write permissions, used **only for release PRs**
+  so their creation triggers CI. Without it, GitHub suppresses CI on bot-created
+  PRs; close/reopen the release PR as a maintainer to trigger the required checks.
+  A GitHub App installation token is a suitable short-lived alternative.
+- Confirm GHCR grants this repository Actions access to the existing package.
+  Confirm artifact attestations are available for the repository/plan.
+- Enable private vulnerability reporting as described in `SECURITY.md`.
 
-`.github/workflows/security.yml` runs additional security checks:
+### Dependency maintenance
 
-- `govulncheck` against the Go module graph
-- Trivy filesystem scanning with SARIF upload to GitHub security results
+Dependabot maintains Go, GitHub Actions (including SHA pins), and Docker images.
+Staticcheck, govulncheck, and GoReleaser versions are pinned in the workflows;
+review their versions during toolchain updates. Trivy complements govulncheck
+with secret and configuration scanning and fails on high/critical findings.
 
 ## License
 

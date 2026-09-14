@@ -1,13 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
-FROM golang:1.27.1 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.1 AS build
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
-ARG SOURCE_URL=https://github.com/matzegebbe/DexTokenBroker
 
 WORKDIR /src
 
@@ -24,7 +23,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
-ARG SOURCE_URL
+ARG SOURCE_URL=https://github.com/matzegebbe/dex-token-broker
 ARG VERSION
 ARG COMMIT
 ARG BUILD_DATE

@@ -1,0 +1,114 @@
+name: verify
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.mod
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l ./cmd ./internal)"
+
+      - name: Check module consistency
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          test -z "$(git ls-files --others --exclude-standard -- go.sum)"
+
+      - name: Run staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Run race detector
+        run: go test -race ./...
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Build binary
+        run: go build -o ./bin/dextokenbroker ./cmd/dextokenbroker
+
+      - name: Smoke test application startup
+        run: |
+          set -euo pipefail
+
+          LISTEN_ADDR=127.0.0.1:18080 LOG_LEVEL=error ./bin/dextokenbroker >startup.log 2>&1 &
+          broker_pid=$!
+          trap 'kill "$broker_pid" 2>/dev/null || true' EXIT
+
+          for _ in {1..50}; do
+            if curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null; then
+              kill -TERM "$broker_pid"
+              wait "$broker_pid"
+              trap - EXIT
+              exit 0
+            fi
+
+            if ! kill -0 "$broker_pid" 2>/dev/null; then
+              cat startup.log
+              wait "$broker_pid" || true
+              echo "application exited before becoming healthy" >&2
+              exit 1
+            fi
+
+            sleep 0.1
+          done
+
+          cat startup.log
+          echo "application did not become healthy within 5 seconds" >&2
+          exit 1
+
+      - name: Build container
+        run: docker build -t dextokenbroker:verify .
+
+      - name: Scan source and configuration
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+
+      - name: Scan built container
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: dextokenbroker:verify
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+
+      - name: Validate GoReleaser configuration
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: v2.18.1
+          args: check
