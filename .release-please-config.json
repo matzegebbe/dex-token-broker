@@ -5,7 +5,10 @@
       "release-type": "simple",
       "include-v-in-tag": true,
       "changelog-path": "CHANGELOG.md",
-      "pull-request-title-pattern": "chore: release ${version}"
+      "pull-request-title-pattern": "chore: release ${version}",
+      "draft": true,
+      "include-component-in-tag": false,
+      "force-tag-creation": true
     }
   }
 }

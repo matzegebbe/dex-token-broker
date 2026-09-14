@@ -4,3 +4,8 @@
 bin
 coverage.out
 dist
+
+.env
+.env.*
+startup.log
+*.sarif

@@ -409,11 +409,11 @@ func (s *Service) requestToken(ctx context.Context, clientID, clientSecret, scop
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		s.logger.Debug("token request upstream error", "status", resp.StatusCode, "body", truncateBody(body))
+		s.logger.Debug("token request upstream error", "status", resp.StatusCode)
 		return oauthTokenResponse{}, nil, &tokenRequestError{
 			StatusCode: mapUpstreamStatus(resp.StatusCode),
 			Message:    "token request failed",
-			Cause:      fmt.Errorf("oauth provider returned %s: %s", resp.Status, truncateBody(body)),
+			Cause:      fmt.Errorf("oauth provider returned HTTP %d", resp.StatusCode),
 		}
 	}
 
@@ -781,17 +781,6 @@ func mapUpstreamStatus(statusCode int) int {
 	default:
 		return http.StatusUnauthorized
 	}
-}
-
-func truncateBody(body []byte) string {
-	const limit = 256
-
-	value := strings.TrimSpace(string(body))
-	if len(value) <= limit {
-		return value
-	}
-
-	return value[:limit] + "..."
 }
 
 func hasInvalidHeaderValue(value string) bool {

@@ -37,6 +37,10 @@ spec:
       labels:
         app: dex-token-broker
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: dex-token-broker
           image: ghcr.io/matzegebbe/dextokenbroker:latest

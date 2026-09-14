@@ -3,3 +3,9 @@ bin/
 coverage.out
 /dextokenbroker
 dist/
+
+.env
+.env.*
+!.env.example
+startup.log
+*.sarif

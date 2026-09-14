@@ -2,21 +2,55 @@ name: release-please
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
 
 jobs:
   release-please:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      released: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
     steps:
-      - name: Run Release Please
-        uses: googleapis/release-please-action@v5
+      - name: Open or update release PR
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ secrets.RELEASE_PLEASE_PAT || github.token }}
+          skip-github-release: true
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # Always use GITHUB_TOKEN for tags: publishing is called explicitly below,
+      # so a PAT cannot also trigger a duplicate tag workflow.
+      - name: Create release tag and draft
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ github.token }}
+          skip-github-pull-request: true
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.released == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag }}
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write

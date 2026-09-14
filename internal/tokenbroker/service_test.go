@@ -1,6 +1,7 @@
 package tokenbroker
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -170,16 +171,6 @@ func TestMapUpstreamStatus(t *testing.T) {
 
 	if got := mapUpstreamStatus(http.StatusInternalServerError); got != http.StatusBadGateway {
 		t.Fatalf("expected bad gateway mapping, got %d", got)
-	}
-}
-
-func TestTruncateBody(t *testing.T) {
-	t.Parallel()
-
-	longBody := strings.Repeat("a", 300)
-	truncated := truncateBody([]byte(longBody))
-	if len(truncated) <= 256 {
-		t.Fatalf("expected truncated body to exceed 256 with ellipsis, got %d", len(truncated))
 	}
 }
 
@@ -473,4 +464,31 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return fn(r)
+}
+
+func TestUpstreamErrorDoesNotExposeSecrets(t *testing.T) {
+	t.Parallel()
+	const secret = "sensitive-echoed-upstream-value"
+	var logs bytes.Buffer
+	service, err := New(Config{DexTokenURL: "https://dex.example/token"}, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.httpClient = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		recorder.WriteHeader(http.StatusUnauthorized)
+		_, _ = recorder.WriteString(secret)
+		return recorder.Result(), nil
+	})}
+	req := httptest.NewRequest(http.MethodGet, "/check", nil)
+	req.Header.Set("x-client-id", "client")
+	req.Header.Set("x-client-secret", secret)
+	recorder := httptest.NewRecorder()
+	service.CheckHandler(recorder, req)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if strings.Contains(logs.String(), secret) || strings.Contains(recorder.Body.String(), secret) {
+		t.Fatal("upstream secret leaked into logs or response")
+	}
 }

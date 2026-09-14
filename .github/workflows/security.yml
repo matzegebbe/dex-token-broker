@@ -1,52 +1,17 @@
 name: security
 
 on:
-  pull_request:
-  push:
-    branches:
-      - main
   schedule:
-    - cron: "0 4 * * 1"
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
-  security-events: write
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  govulncheck:
-    runs-on: ubuntu-latest
-    # Advisory only: standard-library findings depend on the Go toolchain
-    # release, not on this repository's code, so they must not block merges.
-    continue-on-error: true
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: "1.26.5"
-          cache: false
-
-      - name: Run govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
-
-  trivy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-
-      - name: Upload Trivy results
-        uses: github/codeql-action/upload-sarif@v4.38.0
-        with:
-          sarif_file: trivy-results.sarif
+  verify:
+    uses: ./.github/workflows/verify.yml

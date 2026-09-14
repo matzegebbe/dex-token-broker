@@ -1,0 +1,37 @@
+version: 2
+project_name: dextokenbroker
+
+builds:
+  - main: ./cmd/dextokenbroker
+    binary: dextokenbroker
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath, -buildvcs=false, -mod=readonly]
+    tags: [netgo, osusergo]
+    ldflags:
+      - -s -w -buildid= -X main.version={{ .Version }} -X main.commit={{ .FullCommit }} -X main.date={{ .CommitDate }}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [LICENSE, README.md, CHANGELOG.md]
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ['^chore', '^ci:', '^test:']
+
+release:
+  draft: true
+  use_existing_draft: true
+  replace_existing_artifacts: true
+  mode: keep-existing
+  name_template: '{{ .Tag }}'
