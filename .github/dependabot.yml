@@ -1,7 +1,11 @@
 version: 2
 updates:
   - package-ecosystem: "gomod"
-    directory: "/"
+    directories:
+      - "/"
+      - "/tools"
+    allow:
+      - dependency-type: "all"
     target-branch: "main"
     schedule:
       interval: "daily"
@@ -28,7 +32,9 @@ updates:
       prefix: "chore(ci)"
 
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/"
+      - "/tools"
     target-branch: "main"
     schedule:
       interval: "daily"

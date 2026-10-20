@@ -1,0 +1,27 @@
+# Dependabot tracks these images; CI reads their tags for the install actions.
+# Also usable locally: docker compose -f tools/compose.yml run --rm goreleaser check
+services:
+  trivy:
+    image: aquasec/trivy:0.76.0
+    working_dir: /src
+    user: '65532:65532'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      TRIVY_CACHE_DIR: /tmp/trivy-cache
+    volumes:
+      - ..:/src:ro
+  goreleaser:
+    image: goreleaser/goreleaser:v2.18.3
+    working_dir: /src
+    user: '65532:65532'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      HOME: /tmp
+    volumes:
+      - ..:/src:ro

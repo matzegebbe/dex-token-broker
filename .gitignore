@@ -9,3 +9,4 @@ dist/
 !.env.example
 startup.log
 *.sarif
+__pycache__/
