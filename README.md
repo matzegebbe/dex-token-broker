@@ -626,6 +626,9 @@ retrying an older unpublished tag can move the mutable `latest` image tag.
 ### Dependency maintenance
 
 Dependabot maintains Go, GitHub Actions (including SHA pins), and Docker images.
+Keep the Go patch version in `go.mod` and the Dockerfile build image aligned:
+CI and release binaries use `go.mod`, while container builds use the Dockerfile.
+Standard-library vulnerability fixes require updating both and rebuilding artifacts.
 Staticcheck, govulncheck, and GoReleaser versions are pinned in the workflows;
 review their versions during toolchain updates. Trivy complements govulncheck
 with secret and configuration scanning and fails on high/critical findings.
