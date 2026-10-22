@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.3](https://github.com/matzegebbe/dex-token-broker/compare/v0.9.2...v0.9.3) (2026-10-20)
+
+
+### Bug Fixes
+
+* **deps:** update Go and security tooling ([#66](https://github.com/matzegebbe/dex-token-broker/issues/66)) ([d4faa5a](https://github.com/matzegebbe/dex-token-broker/commit/d4faa5a0866364a81c29f5d08bb53236c06ad248))
+
 ## [0.9.2](https://github.com/matzegebbe/dex-token-broker/compare/v0.9.1...v0.9.2) (2026-09-14)
 
 
