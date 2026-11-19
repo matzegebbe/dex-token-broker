@@ -1,6 +1,7 @@
 .DS_Store
 bin/
 coverage.out
+__pycache__/
 /dextokenbroker
 dist/
 

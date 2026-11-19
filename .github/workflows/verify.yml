@@ -21,10 +21,17 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
+      - name: Check Go version propagation
+        run: python3 -m unittest discover -s scripts -p '*_test.py'
+
+      - name: Read Go version from Dockerfile
+        id: go-version
+        run: bash scripts/go-version.sh >> "$GITHUB_OUTPUT"
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go-version.outputs.go }}
           cache-dependency-path: go.mod
 
       - name: Check formatting

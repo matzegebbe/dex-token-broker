@@ -77,9 +77,12 @@ jobs:
         env:
           EXPECTED_SHA: ${{ needs.prepare.outputs.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Read Go version from Dockerfile
+        id: go-version
+        run: bash scripts/go-version.sh >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go-version.outputs.go }}
           cache-dependency-path: go.mod
       - name: Build and upload binaries to draft
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
