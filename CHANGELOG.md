@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/matzegebbe/dex-token-broker/compare/v0.9.3...v0.9.4) (2026-11-19)
+
+
+### Bug Fixes
+
+* **ci:** sync Go toolchains with Docker updates ([#71](https://github.com/matzegebbe/dex-token-broker/issues/71)) ([e1dcdf3](https://github.com/matzegebbe/dex-token-broker/commit/e1dcdf3845a2d8c2fe5cb379dfcaeacfeafb8364))
+
 ## [0.9.3](https://github.com/matzegebbe/dex-token-broker/compare/v0.9.2...v0.9.3) (2026-10-20)
 
 
