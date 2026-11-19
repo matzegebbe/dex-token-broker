@@ -523,10 +523,12 @@ and race tests, `govulncheck`, source/configuration/secret scanning with Trivy,
 binary startup and graceful shutdown, Docker build and image vulnerability scan,
 and GoReleaser validation.
 The weekly security run repeats verification against newly disclosed findings.
-Go comes from `go.mod`; keep the Docker builder on the same patched version.
+CI and release binaries use the Go version pinned in the Dockerfile, read by
+`scripts/go-version.sh`. Dependabot updates this pin for all builds together;
+`go.mod` declares the minimum supported Go version.
 There are no third-party runtime modules, so no `go.sum` is currently needed.
 
-Run `make verify` locally with the Go version in `go.mod`. CI additionally runs
+Run `make verify` locally with the Go version in the Dockerfile. CI additionally runs
 Trivy, Docker, and `goreleaser check` (GoReleaser v2.18.1).
 
 ### Conventional Commits
@@ -625,10 +627,11 @@ retrying an older unpublished tag can move the mutable `latest` image tag.
 
 ### Dependency maintenance
 
-Dependabot maintains Go, GitHub Actions (including SHA pins), and Docker images.
-Keep the Go patch version in `go.mod` and the Dockerfile build image aligned:
-CI and release binaries use `go.mod`, while container builds use the Dockerfile.
-Standard-library vulnerability fixes require updating both and rebuilding artifacts.
+Dependabot maintains Go modules, GitHub Actions (including SHA pins), and Docker images.
+The Dockerfile build image is the single source for the Go build toolchain:
+CI, release binaries, and containers all follow its exact version. Merge
+Dependabot's Go image updates and rebuild release artifacts to pick up standard-library
+security fixes. The `go.mod` version is a minimum requirement, not a separate build pin.
 Staticcheck, govulncheck, and GoReleaser versions are pinned in the workflows;
 review their versions during toolchain updates. Trivy complements govulncheck
 with secret and configuration scanning and fails on high/critical findings.
